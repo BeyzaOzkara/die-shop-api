@@ -71,7 +71,11 @@ class DieBase(BaseModel):
     die_diameter_mm: int
     total_package_length_mm: int
     die_type_id: int
-    # design_file_url: Optional[str] = None
+    
+    profile_no: Optional[str] = None
+    figure_count: Optional[int] = None
+    customer_name: Optional[str] = None
+    press_code: Optional[str] = None
 
 
 class DieCreateIn(BaseModel):
@@ -79,6 +83,11 @@ class DieCreateIn(BaseModel):
     die_diameter_mm: int
     total_package_length_mm: int
     die_type_id: int
+
+    profile_no: Optional[str] = None
+    figure_count: Optional[int] = None
+    customer_name: Optional[str] = None
+    press_code: Optional[str] = None
     # ... profile_no, figure_count, customer_name, press_code, is_fason
 
 
@@ -202,6 +211,11 @@ def create_die(
         total_package_length_mm=p.total_package_length_mm,
         die_type_id=p.die_type_id,
         status=DieStatus.Draft,
+
+        profile_no=p.profile_no,
+        figure_count=p.figure_count,
+        customer_name=p.customer_name,
+        press_code=p.press_code,
     )
     db.add(die)
     db.flush()  # die.id lazım

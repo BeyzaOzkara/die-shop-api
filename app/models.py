@@ -220,6 +220,11 @@ class Die(Base):
     created_at = Column(DateTime(timezone=True), default=utc_now)
     updated_at = Column(DateTime(timezone=True), default=utc_now)
 
+    profile_no = Column(String, nullable=False)
+    figure_count = Column(Integer, nullable=False)
+    customer_name = Column(String, nullable=False)
+    press_code = Column(String, nullable=False)
+
     die_type = relationship("DieType", lazy="selectin") #, back_populates="dies")
     components = relationship("DieComponent", back_populates="die")
     production_orders = relationship("ProductionOrder", back_populates="die")

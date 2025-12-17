@@ -411,11 +411,13 @@ def list_operations_by_work_center(
         .options(
             joinedload(WorkOrderOperation.work_center),
             joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.die_component).joinedload(DieComponent.component_type),
-            joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.production_order).joinedload(ProductionOrder.die)
-            .options(
-                joinedload(Die.die_type),
-                joinedload(Die.files),
-            ),
+            joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.production_order).joinedload(ProductionOrder.die),
+            joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.production_order).joinedload(ProductionOrder.die).joinedload(Die.die_type),
+            joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.production_order).joinedload(ProductionOrder.die).joinedload(Die.files),
+            # .options(
+            #     joinedload(Die.die_type),
+            #     joinedload(Die.files),
+            # ),
         )
         .filter(WorkOrderOperation.work_center_id == work_center_id)
         .order_by(WorkOrderOperation.created_at.asc())
