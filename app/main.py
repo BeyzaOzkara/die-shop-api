@@ -20,6 +20,7 @@ origins = [
     "http://localhost:3000",  # Create React App ise
     "http://arslan",
     "http://arslan:8084",
+    "http://arslan:8082",
 ]
 
 app.add_middleware(
