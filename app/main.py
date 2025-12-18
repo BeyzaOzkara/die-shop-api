@@ -10,6 +10,7 @@ from .routers import inventory, operators, die_config, dies, production_orders, 
 app = FastAPI(
     title="Die Shop API",
     version="0.1.0",
+    # root_path="/api",
 )
 
 Base.metadata.create_all(bind=engine)
@@ -18,6 +19,7 @@ origins = [
     "http://localhost:5173",  # Vite ise
     "http://localhost:3000",  # Create React App ise
     "http://arslan",
+    "http://arslan:8084",
 ]
 
 app.add_middleware(
