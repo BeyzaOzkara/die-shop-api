@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from .config import settings
 
 from .database import engine, Base
-from .routers import inventory, operators, die_config, dies, production_orders, component_bom, work_orders
+from .routers import inventory, operators, operation_types, die_config, dies, production_orders, component_bom, work_orders
 
 app = FastAPI(
     title="Die Shop API",
@@ -39,6 +39,7 @@ app.include_router(work_orders.router)      # /work-orders
 app.include_router(work_orders.ops_router) 
 app.include_router(component_bom.router) 
 app.include_router(operators.router)
+app.include_router(operation_types.router)
 
 @app.get("/health")
 def health_check():

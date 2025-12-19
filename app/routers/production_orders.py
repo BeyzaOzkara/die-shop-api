@@ -203,6 +203,7 @@ def generate_work_orders_for_production_order(
         # component_type için BOM satırlarını al
         boms = (
             db.query(ComponentBOM)
+            .options(joinedload(ComponentBOM.operation_type))
             .filter(ComponentBOM.component_type_id == component.component_type_id)
             .order_by(ComponentBOM.sequence_number.asc())
             .all()
@@ -212,8 +213,9 @@ def generate_work_orders_for_production_order(
             op = WorkOrderOperation(
                 work_order_id=wo.id,
                 sequence_number=bom.sequence_number,
-                operation_name=bom.operation_name,
-                work_center_id=bom.work_center_id,
+                operation_type_id = bom.operation_type_id,
+                operation_name=bom.operation_type.name,  # snapshot (istersen None da yaparsın)
+                work_center_id=bom.preferred_work_center_id,  # NULL olabilir
                 estimated_duration_minutes=bom.estimated_duration_minutes,
                 notes=bom.notes,
                 status=OperationStatus.Waiting,

@@ -20,6 +20,8 @@ from ..models import (
     Lot,
     ProductionOrder,
     Die,
+    DieType,
+    OperationType,
 )
 
 router = APIRouter(prefix="/work-orders", tags=["Work Orders"])
@@ -188,6 +190,16 @@ class WorkCenterNested(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class OperationTypeNested(BaseModel):
+    id: int
+    code: str
+    name: str
+    description: Optional[str] = None
+    is_active: bool = True
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class WorkOrderNestedForOperation(BaseModel):
     id: int
     production_order_id: int
@@ -255,7 +267,9 @@ class WorkOrderOperationRead(BaseModel):
     completed_at: Optional[datetime] = None
     notes: Optional[str] = None
     created_at: datetime
+
     work_center: Optional[WorkCenterNested] = None
+    operation_type: Optional[OperationTypeNested] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -264,7 +278,34 @@ class WorkOrderOperationWithWorkOrderRead(WorkOrderOperationRead):
     work_order: Optional[WorkOrderNestedForOperation] = None
 
 
+class WorkOrderOperationCreate(BaseModel):
+    work_order_id: int
+    sequence_number: int
+    operation_type_id: int
+    operation_name: Optional[str] = None
+    work_center_id: Optional[int] = None
+    estimated_duration_minutes: Optional[int] = None
+    notes: Optional[str] = None
+    status: OperationStatus = OperationStatus.Waiting
 
+
+class WorkOrderOperationUpdate(BaseModel):
+    work_order_id: Optional[int] = None
+    sequence_number: Optional[int] = None
+    operation_type_id: Optional[int] = None
+    operation_name: Optional[str] = None
+    work_center_id: Optional[int] = None
+    operator_name: Optional[str] = None
+    status: Optional[OperationStatus] = None
+    estimated_duration_minutes: Optional[int] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    notes: Optional[str] = None
+
+
+class AssignOperationRequest(BaseModel):
+    work_center_id: int
+    operator_name: Optional[str] = None
 
 
 # =====================================
@@ -336,14 +377,10 @@ def create_work_order(payload: WorkOrderCreate, db: Session = Depends(get_db)):
     wo = (
         db.query(WorkOrder)
         .options(
-            joinedload(WorkOrder.die_component)
-            .joinedload(DieComponent.component_type),
-            joinedload(WorkOrder.die_component)
-            .joinedload(DieComponent.stock_item),
-            joinedload(WorkOrder.lot)
-            .joinedload(Lot.stock_item),
-            joinedload(WorkOrder.production_order)
-            .joinedload(ProductionOrder.die),
+            joinedload(WorkOrder.die_component).joinedload(DieComponent.component_type),
+            joinedload(WorkOrder.die_component).joinedload(DieComponent.stock_item),
+            joinedload(WorkOrder.lot).joinedload(Lot.stock_item),
+            joinedload(WorkOrder.production_order).joinedload(ProductionOrder.die),
         )
         .get(wo.id)
     )
@@ -393,7 +430,8 @@ def list_operations_for_work_order(
 ):
     rows = (
         db.query(WorkOrderOperation)
-        .options(joinedload(WorkOrderOperation.work_center))
+        .options(joinedload(WorkOrderOperation.work_center),
+            joinedload(WorkOrderOperation.operation_type),)
         .filter(WorkOrderOperation.work_order_id == work_order_id)
         .order_by(WorkOrderOperation.sequence_number.asc())
         .all()
@@ -401,23 +439,27 @@ def list_operations_for_work_order(
     return rows
 
 
-@ops_router.get("/by-work-center/{work_center_id}", response_model=List[WorkOrderOperationWithWorkOrderRead])
-def list_operations_by_work_center(
-    work_center_id: int,
-    db: Session = Depends(get_db),
-):
+# ---------------------------
+# ASSIGNED QUEUE (work_center_id = X)
+# ---------------------------
+@ops_router.get("/assigned/by-work-center/{work_center_id}", response_model=List[WorkOrderOperationWithWorkOrderRead])
+def list_assigned_operations_by_work_center(work_center_id: int, db: Session = Depends(get_db)):
     rows = (
         db.query(WorkOrderOperation)
         .options(
             joinedload(WorkOrderOperation.work_center),
-            joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.die_component).joinedload(DieComponent.component_type),
-            joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.production_order).joinedload(ProductionOrder.die),
-            joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.production_order).joinedload(ProductionOrder.die).joinedload(Die.die_type),
-            joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.production_order).joinedload(ProductionOrder.die).joinedload(Die.files),
-            # .options(
-            #     joinedload(Die.die_type),
-            #     joinedload(Die.files),
-            # ),
+            joinedload(WorkOrderOperation.operation_type),
+            joinedload(WorkOrderOperation.work_order)
+                .joinedload(WorkOrder.die_component)
+                .joinedload(DieComponent.component_type),
+            joinedload(WorkOrderOperation.work_order)
+                .joinedload(WorkOrder.production_order)
+                .joinedload(ProductionOrder.die)
+                .joinedload(Die.die_type),
+            joinedload(WorkOrderOperation.work_order)
+                .joinedload(WorkOrder.production_order)
+                .joinedload(ProductionOrder.die)
+                .joinedload(Die.files),
         )
         .filter(WorkOrderOperation.work_center_id == work_center_id)
         .order_by(WorkOrderOperation.created_at.asc())
@@ -426,31 +468,136 @@ def list_operations_by_work_center(
     return rows
 
 
+# ---------------------------
+# ELIGIBLE QUEUE (work_center_id IS NULL + wc.operation_types includes op.operation_type_id)
+# ---------------------------
+@ops_router.get("/eligible/by-work-center/{work_center_id}", response_model=List[WorkOrderOperationWithWorkOrderRead])
+def list_eligible_operations_for_work_center(work_center_id: int, db: Session = Depends(get_db)):
+    wc = (
+        db.query(WorkCenter)
+        .options(joinedload(WorkCenter.operation_types))
+        .get(work_center_id)
+    )
+    if not wc:
+        raise HTTPException(status_code=404, detail="Work center not found")
+
+    op_type_ids = [ot.id for ot in wc.operation_types]
+    if not op_type_ids:
+        return []
+
+    rows = (
+        db.query(WorkOrderOperation)
+        .options(
+            joinedload(WorkOrderOperation.work_center),
+            joinedload(WorkOrderOperation.operation_type),
+            joinedload(WorkOrderOperation.work_order)
+                .joinedload(WorkOrder.die_component)
+                .joinedload(DieComponent.component_type),
+            joinedload(WorkOrderOperation.work_order)
+                .joinedload(WorkOrder.production_order)
+                .joinedload(ProductionOrder.die)
+                .joinedload(Die.die_type),
+            joinedload(WorkOrderOperation.work_order)
+                .joinedload(WorkOrder.production_order)
+                .joinedload(ProductionOrder.die)
+                .joinedload(Die.files),
+        )
+        .filter(
+            WorkOrderOperation.work_center_id.is_(None),
+            WorkOrderOperation.operation_type_id.in_(op_type_ids),
+            WorkOrderOperation.status == OperationStatus.Waiting,
+        )
+        .order_by(WorkOrderOperation.created_at.asc())
+        .all()
+    )
+    return rows
+
+
+# ---------------------------
+# ASSIGN (eligible -> assigned)
+# ---------------------------
+@ops_router.post("/{id}/assign", response_model=WorkOrderOperationRead)
+def assign_operation(id: int, payload: AssignOperationRequest, db: Session = Depends(get_db)):
+    op_row = db.query(WorkOrderOperation).get(id)
+    if not op_row:
+        raise HTTPException(status_code=404, detail="Work order operation not found")
+
+    if op_row.work_center_id is not None:
+        raise HTTPException(status_code=400, detail="Operation is already assigned to a work center")
+
+    if op_row.status != OperationStatus.Waiting:
+        raise HTTPException(status_code=400, detail="Only Waiting operations can be assigned")
+
+    wc = (
+        db.query(WorkCenter)
+        .options(joinedload(WorkCenter.operation_types))
+        .get(payload.work_center_id)
+    )
+    if not wc:
+        raise HTTPException(status_code=404, detail="Work center not found")
+
+    allowed_ids = {ot.id for ot in wc.operation_types}
+    if op_row.operation_type_id not in allowed_ids:
+        raise HTTPException(status_code=400, detail="This work center cannot perform this operation type")
+
+    op_row.work_center_id = wc.id
+    if payload.operator_name:
+        op_row.operator_name = payload.operator_name
+
+    db.commit()
+    db.refresh(op_row)
+
+    op_row = (
+        db.query(WorkOrderOperation)
+        .options(
+            joinedload(WorkOrderOperation.work_center),
+            joinedload(WorkOrderOperation.operation_type),
+        )
+        .get(op_row.id)
+    )
+    return op_row
+
+
+# @ops_router.get("/by-work-center/{work_center_id}", response_model=List[WorkOrderOperationWithWorkOrderRead])
+# def list_operations_by_work_center(
+#     work_center_id: int,
+#     db: Session = Depends(get_db),
+# ):
+#     rows = (
+#         db.query(WorkOrderOperation)
+#         .options(
+#             joinedload(WorkOrderOperation.work_center),
+#             joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.die_component).joinedload(DieComponent.component_type),
+#             joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.production_order).joinedload(ProductionOrder.die),
+#             joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.production_order).joinedload(ProductionOrder.die).joinedload(Die.die_type),
+#             joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.production_order).joinedload(ProductionOrder.die).joinedload(Die.files),
+#         )
+#         .filter(WorkOrderOperation.work_center_id == work_center_id)
+#         .order_by(WorkOrderOperation.created_at.asc())
+#         .all()
+#     )
+#     return rows
+
+
 @ops_router.post("/", response_model=WorkOrderOperationRead, status_code=201)
 def create_work_order_operation(
     payload: WorkOrderOperationCreate,
     db: Session = Depends(get_db),
 ):
-    op = WorkOrderOperation(
-        work_order_id=payload.work_order_id,
-        sequence_number=payload.sequence_number,
-        operation_name=payload.operation_name,
-        work_center_id=payload.work_center_id,
-        estimated_duration_minutes=payload.estimated_duration_minutes,
-        notes=payload.notes,
-        status=payload.status,
-    )
-    db.add(op)
+    op_row = WorkOrderOperation(**payload.model_dump())
+    db.add(op_row)
     db.commit()
-    db.refresh(op)
+    db.refresh(op_row)
 
-    # work_center join'li dönelim
-    op = (
+    op_row = (
         db.query(WorkOrderOperation)
-        .options(joinedload(WorkOrderOperation.work_center))
-        .get(op.id)
+        .options(
+            joinedload(WorkOrderOperation.work_center),
+            joinedload(WorkOrderOperation.operation_type),
+        )
+        .get(op_row.id)
     )
-    return op
+    return op_row
 
 
 @ops_router.patch("/{id}", response_model=WorkOrderOperationRead)

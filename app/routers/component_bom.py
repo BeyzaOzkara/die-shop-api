@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict
 from datetime import datetime
 
 from ..database import get_db
-from ..models import ComponentBOM, WorkCenter, ComponentType
+from ..models import ComponentBOM
 
 router = APIRouter(prefix="/component-bom", tags=["Component BOM"])
 
@@ -31,6 +31,13 @@ class ComponentTypeNested(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+class OperationTypeNested(BaseModel):
+    id: int
+    code: str
+    name: str
+    description: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
 
 # =========================
 # BOM modelleri
@@ -39,8 +46,8 @@ class ComponentTypeNested(BaseModel):
 class ComponentBOMBase(BaseModel):
     component_type_id: int
     sequence_number: int
-    operation_name: str
-    work_center_id: int
+    operation_type_id: int
+    preferred_work_center_id: Optional[int] = None
     estimated_duration_minutes: Optional[int] = None
     notes: Optional[str] = None
 
@@ -51,8 +58,8 @@ class ComponentBOMCreate(ComponentBOMBase):
 
 class ComponentBOMUpdate(BaseModel):
     sequence_number: Optional[int] = None
-    operation_name: Optional[str] = None
-    work_center_id: Optional[int] = None
+    operation_type_id: Optional[int] = None
+    preferred_work_center_id: Optional[int] = None
     estimated_duration_minutes: Optional[int] = None
     notes: Optional[str] = None
 
@@ -61,7 +68,8 @@ class ComponentBOMRead(ComponentBOMBase):
     id: int
     created_at: datetime
     component_type: Optional[ComponentTypeNested] = None
-    work_center: Optional[WorkCenterNested] = None
+    operation_type: Optional[OperationTypeNested] = None
+    preferred_work_center: Optional[WorkCenterNested] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -79,7 +87,8 @@ def list_bom_operations(
         db.query(ComponentBOM)
         .options(
             joinedload(ComponentBOM.component_type),
-            joinedload(ComponentBOM.work_center),
+            joinedload(ComponentBOM.operation_type),
+            joinedload(ComponentBOM.preferred_work_center),
         )
         .filter(ComponentBOM.component_type_id == component_type_id)
         .order_by(ComponentBOM.sequence_number.asc())
@@ -93,14 +102,7 @@ def create_bom_operation(
     payload: ComponentBOMCreate,
     db: Session = Depends(get_db),
 ):
-    bom = ComponentBOM(
-        component_type_id=payload.component_type_id,
-        work_center_id=payload.work_center_id,
-        sequence_number=payload.sequence_number,
-        operation_name=payload.operation_name,
-        estimated_duration_minutes=payload.estimated_duration_minutes,
-        notes=payload.notes,
-    )
+    bom = ComponentBOM(**payload.model_dump())
 
     db.add(bom)
     db.commit()
@@ -110,7 +112,8 @@ def create_bom_operation(
         db.query(ComponentBOM)
         .options(
             joinedload(ComponentBOM.component_type),
-            joinedload(ComponentBOM.work_center),
+            joinedload(ComponentBOM.operation_type),
+            joinedload(ComponentBOM.preferred_work_center),
         )
         .get(bom.id)
     )
@@ -123,7 +126,8 @@ def update_bom_operation(
     payload: ComponentBOMUpdate,
     db: Session = Depends(get_db),
 ):
-    bom = db.query(ComponentBOM).get(id)
+    # bom = db.query(ComponentBOM).get(id)
+    bom = db.get(ComponentBOM, id)
     if not bom:
         raise HTTPException(status_code=404, detail="Component BOM not found")
 
@@ -137,7 +141,8 @@ def update_bom_operation(
         db.query(ComponentBOM)
         .options(
             joinedload(ComponentBOM.component_type),
-            joinedload(ComponentBOM.work_center),
+            joinedload(ComponentBOM.operation_type),
+            joinedload(ComponentBOM.preferred_work_center),
         )
         .get(bom.id)
     )
@@ -149,7 +154,8 @@ def delete_bom_operation(
     id: int,
     db: Session = Depends(get_db),
 ):
-    bom = db.query(ComponentBOM).get(id)
+    # bom = db.query(ComponentBOM).get(id)
+    bom = db.get(ComponentBOM, id)
     if not bom:
         raise HTTPException(status_code=404, detail="Component BOM not found")
 
