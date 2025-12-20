@@ -59,6 +59,20 @@ class OperatorLoginRequest(BaseModel):
     rfid_code: str
 
 
+# ---------- Helpers ----------
+
+def get_operator_with_centers(db: Session, operator_id: int) -> Operator:
+    op = (
+        db.query(Operator)
+        .options(joinedload(Operator.work_centers))
+        .filter(Operator.id == operator_id)
+        .first()
+    )
+    if not op:
+        raise HTTPException(status_code=404, detail="Operator not found")
+    return op
+
+
 # ---------- Endpoint’ler ----------
 
 @router.get("/", response_model=List[OperatorRead])
@@ -74,15 +88,16 @@ def list_operators(db: Session = Depends(get_db)):
 
 @router.get("/{id}", response_model=OperatorRead)
 def get_operator(id: int, db: Session = Depends(get_db)):
-    op = (
-        db.query(Operator)
-        .options(joinedload(Operator.work_centers))
-        .filter(Operator.id == id)
-        .first()
-    )
-    if not op:
-        raise HTTPException(status_code=404, detail="Operator not found")
-    return op
+    return get_operator_with_centers(db, id)
+    # op = (
+    #     db.query(Operator)
+    #     .options(joinedload(Operator.work_centers))
+    #     .filter(Operator.id == id)
+    #     .first()
+    # )
+    # if not op:
+    #     raise HTTPException(status_code=404, detail="Operator not found")
+    # return op
 
 
 @router.post("/", response_model=OperatorRead, status_code=201)
@@ -113,8 +128,11 @@ def create_operator(payload: OperatorCreate, db: Session = Depends(get_db)):
     db.add(op)
     db.commit()
     db.refresh(op)
-    db.refresh(op, attribute_names=["work_centers"])
-    return op
+
+    # db.refresh(op, attribute_names=["work_centers"])
+    # return op
+    # Commit'ten sonra joinedload ile tekrar çekiyoruz ki work_centers kesin dolu gelsin.
+    return get_operator_with_centers(db, op.id)
 
 
 @router.patch("/{id}", response_model=OperatorRead)
@@ -139,8 +157,10 @@ def update_operator(id: int, payload: OperatorUpdate, db: Session = Depends(get_
 
     db.commit()
     db.refresh(op)
-    db.refresh(op, attribute_names=["work_centers"])
-    return op
+    # same: joinedload ile tekrar çek
+    return get_operator_with_centers(db, op.id)
+    # db.refresh(op, attribute_names=["work_centers"])
+    # return op
 
 
 @router.delete("/{id}", status_code=204)
@@ -149,7 +169,7 @@ def delete_operator(id: int, db: Session = Depends(get_db)):
     if not op:
         raise HTTPException(status_code=404, detail="Operator not found")
 
-    db.delete(op)
+    db.delete(op)  # silde gerçekten silelim mi pasif mi yapalım
     db.commit()
     return
 
