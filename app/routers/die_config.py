@@ -206,9 +206,33 @@ def update_component_type(id: int, payload: ComponentTypeUpdate, db: Session = D
     if not ct:
         raise HTTPException(status_code=404, detail="Component type not found")
 
-    for field, value in payload.model_dump(exclude_unset=True).items():
-        setattr(ct, field, value)
+    # for field, value in payload.model_dump(exclude_unset=True).items():
+    #     setattr(ct, field, value)
 
+    # ct.updated_at = datetime.utcnow()
+
+    # db.commit()
+    # db.refresh(ct)
+    # return ct
+    data = payload.model_dump(exclude_unset=True)
+
+    # code normalize + unique check
+    if "code" in data and data["code"] is not None:
+        new_code = data["code"].strip().upper()
+        # sadece değişiyorsa kontrol et
+        if new_code != ct.code:
+            exists = (
+                db.query(ComponentType)
+                .filter(ComponentType.code == new_code, ComponentType.id != id)
+                .first()
+            )
+            if exists:
+                raise HTTPException(status_code=400, detail="Component type code already exists")
+        data["code"] = new_code
+
+    for field, value in data.items():
+        setattr(ct, field, value)
+    
     ct.updated_at = datetime.utcnow()
 
     db.commit()
