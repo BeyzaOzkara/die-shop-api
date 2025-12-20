@@ -75,8 +75,26 @@ def update_operation_type(id: int, payload: OperationTypeUpdate, db: Session = D
     if not ot:
         raise HTTPException(status_code=404, detail="Operation type not found")
 
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    data = payload.model_dump(exclude_unset=True)
+
+    # code normalize + unique check
+    if "code" in data and data["code"] is not None:
+        new_code = data["code"].strip().upper()
+        # sadece değişiyorsa kontrol et
+        if new_code != ot.code:
+            exists = (
+                db.query(OperationType)
+                .filter(OperationType.code == new_code, OperationType.id != id)
+                .first()
+            )
+            if exists:
+                raise HTTPException(status_code=400, detail="Operation type code already exists")
+        data["code"] = new_code
+
+    for field, value in data.items():
         setattr(ot, field, value)
+    # for field, value in payload.model_dump(exclude_unset=True).items():
+    #     setattr(ot, field, value)
 
     db.commit()
     db.refresh(ot)
