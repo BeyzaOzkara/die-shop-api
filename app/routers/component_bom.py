@@ -19,7 +19,6 @@ router = APIRouter(prefix="/component-bom", tags=["Component BOM"])
 class WorkCenterNested(BaseModel):
     id: int
     name: str
-    type: str
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -47,6 +46,7 @@ class ComponentBOMBase(BaseModel):
     component_type_id: int
     sequence_number: int
     operation_type_id: int
+    operation_name: str 
     preferred_work_center_id: Optional[int] = None
     estimated_duration_minutes: Optional[int] = None
     notes: Optional[str] = None
@@ -59,6 +59,7 @@ class ComponentBOMCreate(ComponentBOMBase):
 class ComponentBOMUpdate(BaseModel):
     sequence_number: Optional[int] = None
     operation_type_id: Optional[int] = None
+    operation_name: Optional[str] = None
     preferred_work_center_id: Optional[int] = None
     estimated_duration_minutes: Optional[int] = None
     notes: Optional[str] = None

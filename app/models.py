@@ -101,6 +101,12 @@ class DieType(Base):
     die_type_components = relationship("DieTypeComponent", back_populates="die_type")
     dies = relationship("Die", back_populates="die_type")
 
+work_center_operation_type = Table(
+    "work_center_operation_type",
+    Base.metadata,
+    Column("work_center_id", Integer, ForeignKey("work_center.id"), primary_key=True),
+    Column("operation_type_id", Integer, ForeignKey("operation_type.id"), primary_key=True),
+)
 
 class OperationType(Base):
     __tablename__ = "operation_type"
@@ -112,20 +118,20 @@ class OperationType(Base):
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
+    work_centers = relationship(
+        "WorkCenter",
+        secondary=work_center_operation_type,
+        back_populates="operation_types",
+    )
 
-work_center_operation_type = Table(
-    "work_center_operation_type",
-    Base.metadata,
-    Column("work_center_id", Integer, ForeignKey("work_center.id"), primary_key=True),
-    Column("operation_type_id", Integer, ForeignKey("operation_type.id"), primary_key=True),
-)
 
 class WorkCenter(Base):
     __tablename__ = "work_center"
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
-    type = Column(String, nullable=False)
+    # type = Column(String, nullable=False)
+    
     status = Column(SAEnum(WorkCenterStatus), nullable=False, default=WorkCenterStatus.Available)
     location = Column(String)
     capacity_per_hour = Column(Integer)
@@ -147,15 +153,8 @@ class WorkCenter(Base):
     operation_types = relationship(
         "OperationType",
         secondary=work_center_operation_type,
-        backref="work_centers",
+        back_populates="work_centers",
     )
-    # work_order_operations = relationship("WorkOrderOperation", back_populates="work_center")
-    # operators = relationship(
-    #     "Operator",
-    #     secondary=operator_work_center,
-    #     back_populates="work_centers",
-    # )
-    # operators = relationship("Operator", back_populates="work_center")  # NEW
 
 
 class ComponentType(Base):
@@ -193,7 +192,8 @@ class ComponentBOM(Base):
     component_type_id = Column(Integer, ForeignKey("component_type.id"), nullable=False)
     sequence_number = Column(Integer, nullable=False)
 
-    # artık operasyon tipi var
+    operation_name = Column(String, nullable=False) # operastonun spesifik adı (Bakır Markalama)
+    # artık operasyon tipi var, kategori gibi (El İşçiliği)
     operation_type_id = Column(Integer, ForeignKey("operation_type.id"), nullable=False)
     # opsiyonel: önerilen / default makine
     preferred_work_center_id = Column(Integer, ForeignKey("work_center.id"), nullable=True)
@@ -345,14 +345,12 @@ class WorkOrderOperation(Base):
     work_order_id = Column(Integer, ForeignKey("work_order.id"), nullable=False)
     sequence_number = Column(Integer, nullable=False)
 
-    # artık string değil, normalize
+    # artık string değil, normalize  (kategori gibi)
     operation_type_id = Column(Integer, ForeignKey("operation_type.id"), nullable=False)
-    # atanana kadar NULL olabilir
+    # atanana kadar NULL olabilir (atama nasıl olacak bilmiyorum)
     work_center_id = Column(Integer, ForeignKey("work_center.id"), nullable=True)
-    # UI / snapshot için tutulabilir
-    operation_name = Column(String, nullable=True)
-    # operation_name = Column(String, nullable=False)
-    # work_center_id = Column(Integer, ForeignKey("work_center.id"), nullable=False)
+    # UI / snapshot için tutulabilir (operasyonun spesifik ismi)
+    operation_name = Column(String, nullable=False) # nullabale true omamalı çünkü BOM'dan gelecek
 
     operator_name = Column(String, nullable=True)
     status = Column(

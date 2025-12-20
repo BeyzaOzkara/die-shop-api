@@ -89,6 +89,7 @@ def delete_operation_type(id: int, db: Session = Depends(get_db)):
     if not ot:
         raise HTTPException(status_code=404, detail="Operation type not found")
 
-    db.delete(ot)
+    # db.delete(ot)
+    ot.is_active = False
     db.commit()
     return

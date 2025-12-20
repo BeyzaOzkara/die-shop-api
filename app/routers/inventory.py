@@ -13,6 +13,7 @@ from ..models import (
     SteelStockItem,
     Lot,
     StockMovement,
+    OperationType,
 )
 
 router = APIRouter(prefix="/inventory", tags=["Inventory"])
@@ -22,9 +23,14 @@ router = APIRouter(prefix="/inventory", tags=["Inventory"])
 # Pydantic Şemalar
 # =========================
 
+class OperationTypeNested(BaseModel):
+    id: int
+    code: str
+    name: str
+    model_config = ConfigDict(from_attributes=True)
+
 class WorkCenterBase(BaseModel):
     name: str
-    type: str
     status: WorkCenterStatus = WorkCenterStatus.Available
     location: Optional[str] = None
     capacity_per_hour: Optional[int] = None
@@ -33,23 +39,23 @@ class WorkCenterBase(BaseModel):
 
 
 class WorkCenterCreate(WorkCenterBase):
-    pass
+    operation_type_ids: List[int] = []
 
 
 class WorkCenterUpdate(BaseModel):
     name: Optional[str] = None
-    type: Optional[str] = None
     status: Optional[WorkCenterStatus] = None
     location: Optional[str] = None
     capacity_per_hour: Optional[int] = None
     setup_time_minutes: Optional[int] = None
     cost_per_hour: Optional[float] = None
+    operation_type_ids: Optional[List[int]] = None
 
 
 class WorkCenterRead(WorkCenterBase):
     id: int
     created_at: datetime
-
+    operation_types: List[OperationTypeNested] = []
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -138,15 +144,37 @@ class StockMovementRead(StockMovementBase):
 
 @router.get("/work-centers", response_model=List[WorkCenterRead])
 def list_work_centers(db: Session = Depends(get_db)):
-    return db.query(WorkCenter).order_by(WorkCenter.name).all()
+    return (
+        db.query(WorkCenter)
+        .options(joinedload(WorkCenter.operation_types))
+        .order_by(WorkCenter.name)
+        .all()
+    )
 
 
 @router.post("/work-centers", response_model=WorkCenterRead, status_code=201)
 def create_work_center(payload: WorkCenterCreate, db: Session = Depends(get_db)):
-    wc = WorkCenter(**payload.model_dump())
+    wc = WorkCenter(
+        name=payload.name,
+        status=payload.status,
+        location=payload.location,
+        capacity_per_hour=payload.capacity_per_hour,
+        setup_time_minutes=payload.setup_time_minutes,
+        cost_per_hour=payload.cost_per_hour,
+    )
+
+    if payload.operation_type_ids:
+        ots = (
+            db.query(OperationType)
+            .filter(OperationType.id.in_(payload.operation_type_ids))
+            .all()
+        )
+        wc.operation_types = ots
+
     db.add(wc)
     db.commit()
     db.refresh(wc)
+    db.refresh(wc, attribute_names=["operation_types"])
     return wc
 
 @router.delete("/work-centers/{id}", status_code=204)
@@ -160,15 +188,31 @@ def delete_work_center(id: int, db: Session = Depends(get_db)):
 
 @router.patch("/work-centers/{id}", response_model=WorkCenterRead)
 def update_work_center(id: int, payload: WorkCenterUpdate, db: Session = Depends(get_db)):
-    wc = db.query(WorkCenter).get(id)
+    wc = (
+        db.query(WorkCenter)
+        .options(joinedload(WorkCenter.operation_types))
+        .get(id)
+    )
     if not wc:
         raise HTTPException(status_code=404, detail="Work center not found")
 
-    for field, value in payload.model_dump(exclude_unset=True).items():
-        setattr(wc, field, value)
+    data = payload.model_dump(exclude_unset=True)
+
+    # normal alanlar
+    for field in ["name", "status", "location", "capacity_per_hour", "setup_time_minutes", "cost_per_hour"]:
+        if field in data:
+            setattr(wc, field, data[field])
+
+    # M2M replace
+    if "operation_type_ids" in data:
+        from ..models import OperationType
+        ids = data["operation_type_ids"] or []
+        ots = db.query(OperationType).filter(OperationType.id.in_(ids)).all() if ids else []
+        wc.operation_types = ots
 
     db.commit()
     db.refresh(wc)
+    db.refresh(wc, attribute_names=["operation_types"])
     return wc
 
 # =========================

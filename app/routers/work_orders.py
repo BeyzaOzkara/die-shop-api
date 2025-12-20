@@ -179,7 +179,6 @@ class WorkOrderRead(WorkOrderBase):
 class WorkCenterNested(BaseModel):
     id: int
     name: str
-    type: str
     status: WorkCenterStatus
     location: Optional[str] = None
     capacity_per_hour: Optional[int] = None
@@ -222,60 +221,13 @@ class WorkOrderOperationBase(BaseModel):
     work_order_id: int
     sequence_number: int
     operation_name: str
-    work_center_id: int
+    work_center_id: Optional[int]
     operator_name: Optional[str] = None
     status: OperationStatus = OperationStatus.Waiting
     estimated_duration_minutes: Optional[int] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     notes: Optional[str] = None
-
-
-class WorkOrderOperationCreate(BaseModel):
-    work_order_id: int
-    sequence_number: int
-    operation_name: str
-    work_center_id: int
-    estimated_duration_minutes: Optional[int] = None
-    notes: Optional[str] = None
-    status: OperationStatus = OperationStatus.Waiting
-
-
-class WorkOrderOperationUpdate(BaseModel):
-    work_order_id: Optional[int] = None
-    sequence_number: Optional[int] = None
-    operation_name: Optional[str] = None
-    work_center_id: Optional[int] = None
-    operator_name: Optional[str] = None
-    status: Optional[OperationStatus] = None
-    estimated_duration_minutes: Optional[int] = None
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-    notes: Optional[str] = None
-
-
-class WorkOrderOperationRead(BaseModel):
-    id: int
-    work_order_id: int
-    sequence_number: int
-    operation_name: str
-    work_center_id: int
-    operator_name: Optional[str] = None
-    status: OperationStatus
-    estimated_duration_minutes: Optional[int] = None
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-    notes: Optional[str] = None
-    created_at: datetime
-
-    work_center: Optional[WorkCenterNested] = None
-    operation_type: Optional[OperationTypeNested] = None
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class WorkOrderOperationWithWorkOrderRead(WorkOrderOperationRead):
-    work_order: Optional[WorkOrderNestedForOperation] = None
 
 
 class WorkOrderOperationCreate(BaseModel):
@@ -288,9 +240,7 @@ class WorkOrderOperationCreate(BaseModel):
     notes: Optional[str] = None
     status: OperationStatus = OperationStatus.Waiting
 
-
 class WorkOrderOperationUpdate(BaseModel):
-    work_order_id: Optional[int] = None
     sequence_number: Optional[int] = None
     operation_type_id: Optional[int] = None
     operation_name: Optional[str] = None
@@ -302,6 +252,30 @@ class WorkOrderOperationUpdate(BaseModel):
     completed_at: Optional[datetime] = None
     notes: Optional[str] = None
 
+class WorkOrderOperationRead(BaseModel):
+    id: int
+    work_order_id: int
+    sequence_number: int
+    operation_type_id: int
+    operation_name: Optional[str] = None
+    work_center_id: Optional[int] = None   # ✅ nullable
+    operator_name: Optional[str] = None
+    status: OperationStatus
+    estimated_duration_minutes: Optional[int] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    notes: Optional[str] = None
+    created_at: datetime
+
+    work_center: Optional[WorkCenterNested] = None
+    operation_type: Optional[OperationTypeNested] = None
+    work_order: Optional[WorkOrderNestedForOperation] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WorkOrderOperationWithWorkOrderRead(WorkOrderOperationRead):
+    work_order: Optional[WorkOrderNestedForOperation] = None
 
 class AssignOperationRequest(BaseModel):
     work_center_id: int
@@ -558,25 +532,26 @@ def assign_operation(id: int, payload: AssignOperationRequest, db: Session = Dep
     return op_row
 
 
-# @ops_router.get("/by-work-center/{work_center_id}", response_model=List[WorkOrderOperationWithWorkOrderRead])
-# def list_operations_by_work_center(
-#     work_center_id: int,
-#     db: Session = Depends(get_db),
-# ):
-#     rows = (
-#         db.query(WorkOrderOperation)
-#         .options(
-#             joinedload(WorkOrderOperation.work_center),
-#             joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.die_component).joinedload(DieComponent.component_type),
-#             joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.production_order).joinedload(ProductionOrder.die),
-#             joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.production_order).joinedload(ProductionOrder.die).joinedload(Die.die_type),
-#             joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.production_order).joinedload(ProductionOrder.die).joinedload(Die.files),
-#         )
-#         .filter(WorkOrderOperation.work_center_id == work_center_id)
-#         .order_by(WorkOrderOperation.created_at.asc())
-#         .all()
-#     )
-#     return rows
+@ops_router.get("/by-work-center/{work_center_id}", response_model=List[WorkOrderOperationWithWorkOrderRead])
+def list_operations_by_work_center(
+    work_center_id: int,
+    db: Session = Depends(get_db),
+):
+    rows = (
+        db.query(WorkOrderOperation)
+        .options(
+            joinedload(WorkOrderOperation.work_center),
+            joinedload(WorkOrderOperation.operation_type),
+            joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.die_component).joinedload(DieComponent.component_type),
+            joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.production_order).joinedload(ProductionOrder.die),
+            joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.production_order).joinedload(ProductionOrder.die).joinedload(Die.die_type),
+            joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.production_order).joinedload(ProductionOrder.die).joinedload(Die.files),
+        )
+        .filter(WorkOrderOperation.work_center_id == work_center_id)
+        .order_by(WorkOrderOperation.created_at.asc())
+        .all()
+    )
+    return rows
 
 
 @ops_router.post("/", response_model=WorkOrderOperationRead, status_code=201)

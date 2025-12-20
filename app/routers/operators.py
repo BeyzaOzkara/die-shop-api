@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session, joinedload
 
 from ..database import get_db
-from ..models import Operator, WorkCenter
+from ..models import Operator, WorkCenter, WorkCenterStatus
 
 router = APIRouter(prefix="/operators", tags=["Operators"])
 
@@ -17,9 +17,12 @@ router = APIRouter(prefix="/operators", tags=["Operators"])
 class WorkCenterNested(BaseModel):
     id: int
     name: str
-    type: str
-    status: str
+    status: WorkCenterStatus
     location: Optional[str] = None
+    capacity_per_hour: Optional[int] = None
+    setup_time_minutes: Optional[int] = None
+    cost_per_hour: Optional[float] = None
+    created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
 
