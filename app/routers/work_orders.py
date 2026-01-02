@@ -21,6 +21,7 @@ from ..models import (
     Die,
     Operator,
     OperationType,
+     StockMovement,
 )
 from ..deps import require_admin
 
