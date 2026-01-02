@@ -174,7 +174,8 @@ def update_operator(id: int, payload: OperatorUpdate, db: Session = Depends(get_
 # @router.delete("/{id}", status_code=204)
 @router.delete("/{id}", status_code=204, dependencies=[Depends(require_admin)])
 def delete_operator(id: int, db: Session = Depends(get_db)):
-    op = db.query(Operator).get(id)
+    # op = db.query(Operator).get(id)
+    op = db.get(Operator, id)
     if not op:
         raise HTTPException(status_code=404, detail="Operator not found")
 

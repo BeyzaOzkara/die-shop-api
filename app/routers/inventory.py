@@ -297,6 +297,26 @@ def update_lot_remaining(lot_id: int, payload: LotUpdateRemaining, db: Session =
     db.refresh(lot)
     return lot
 
+@router.delete("/lots/{lot_id}", status_code=204, dependencies=[Depends(require_admin)])
+def delete_lot(lot_id: int, db: Session = Depends(get_db)):
+    lot = db.query(Lot).get(lot_id)
+    if not lot:
+        raise HTTPException(status_code=404, detail="Lot not found")
+
+    # Lot kullanıldı mı? (stok hareketi var mı?)
+    used_count = db.query(StockMovement).filter(StockMovement.lot_id == lot_id).count()
+    # remaining_kg != gross_weight_kg
+    if used_count > 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Bu lot stok hareketlerinde kullanıldığı için silinemez."
+        )
+
+    db.delete(lot)
+    db.commit()
+    return
+
+
 # =========================
 # Stock Movements
 # =========================
