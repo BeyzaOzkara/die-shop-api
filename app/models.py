@@ -56,6 +56,12 @@ class DieStatus(str, enum.Enum):
     InProduction = "InProduction"
     Completed = "Completed"
 
+class OperatorRole(str, enum.Enum):
+    Operator = "Operator"
+    QualityControl = "QualityControl" # operasyon sonunda ret veirse work order opersayon sırasını bozup başka yere gönderebilir
+    Supervisor = "Supervisor"
+    Manager = "Manager"
+
 
 # =========================
 # OPERATOR - WORK CENTER M2M
@@ -68,10 +74,34 @@ operator_work_center = Table(
     Column("work_center_id", Integer, ForeignKey("work_center.id"), primary_key=True),
 )
 
+work_center_operation_type = Table(
+    "work_center_operation_type",
+    Base.metadata,
+    Column("work_center_id", Integer, ForeignKey("work_center.id"), primary_key=True),
+    Column("operation_type_id", Integer, ForeignKey("operation_type.id"), primary_key=True),
+)
 
 # =========================
 # MASTER DATA
 # =========================
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    username = Column(String(50), unique=True, index=True, nullable=False)
+    name = Column(String(100), nullable=False)
+    surname = Column(String(100), nullable=False)
+
+    email = Column(String(255), index=True, nullable=True)
+    password_hash = Column(String(255), nullable=False)
+
+    is_active = Column(Boolean, nullable=False, default=True)
+    is_admin = Column(Boolean, nullable=False, default=False) # böyle mi olmalı yoksa role mu?
+
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
 class File(Base):
     __tablename__ = "files"
@@ -101,12 +131,6 @@ class DieType(Base):
     die_type_components = relationship("DieTypeComponent", back_populates="die_type")
     dies = relationship("Die", back_populates="die_type")
 
-work_center_operation_type = Table(
-    "work_center_operation_type",
-    Base.metadata,
-    Column("work_center_id", Integer, ForeignKey("work_center.id"), primary_key=True),
-    Column("operation_type_id", Integer, ForeignKey("operation_type.id"), primary_key=True),
-)
 
 class OperationType(Base):
     __tablename__ = "operation_type"
@@ -251,8 +275,10 @@ class Die(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     die_number = Column(String, nullable=False, unique=True)
-    die_diameter_mm = Column(Integer, nullable=False)
-    total_package_length_mm = Column(Integer, nullable=False)
+    die_diameter_mm = Column(Numeric(10, 2), nullable=False)
+    # die_diameter_mm = Column(Integer, nullable=False)
+    total_package_length_mm = Column(Numeric(10, 2), nullable=False)
+    # total_package_length_mm = Column(Integer, nullable=False)
     die_type_id = Column(Integer, ForeignKey("die_type.id"), nullable=False)
     status = Column(SAEnum(DieStatus), nullable=False, default=DieStatus.Draft)
     created_at = Column(DateTime(timezone=True), default=utc_now)
@@ -283,7 +309,7 @@ class DieComponent(Base):
     die_id = Column(Integer, ForeignKey("die.id"), nullable=False)
     component_type_id = Column(Integer, ForeignKey("component_type.id"), nullable=False)
     stock_item_id = Column(Integer, ForeignKey("steel_stock_item.id"), nullable=False)
-    package_length_mm = Column(Integer, nullable=False)
+    package_length_mm = Column(Numeric(10, 2), nullable=False)
     theoretical_consumption_kg = Column(Numeric(12, 3), nullable=False)
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
@@ -404,6 +430,17 @@ class Operator(Base):
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), default=utc_now)
     updated_at = Column(DateTime(timezone=True), default=utc_now)
+
+    # role = Column(String, nullable=True)  # "Technician", "Supervisor" vs.
+    role = Column(
+        SAEnum(
+            OperatorRole,
+            name="operator_role",          # DB enum type adı
+            native_enum=True               # Postgres için önemli
+        ),
+        nullable=False,
+        default=OperatorRole.Operator,
+    )
 
     # work_center = relationship("WorkCenter", back_populates="operators")
     work_centers = relationship(

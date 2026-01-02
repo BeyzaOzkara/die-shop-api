@@ -3,6 +3,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import exists, and_
 from pydantic import BaseModel, ConfigDict
 from datetime import datetime, timezone
 
@@ -15,14 +16,13 @@ from ..models import (
     WorkCenter,
     WorkCenterStatus,
     DieComponent,
-    ComponentType,
-    SteelStockItem,
     Lot,
     ProductionOrder,
     Die,
-    DieType,
+    Operator,
     OperationType,
 )
+from ..deps import require_admin
 
 router = APIRouter(prefix="/work-orders", tags=["Work Orders"])
 
@@ -65,7 +65,7 @@ class DieComponentNested(BaseModel):
     die_id: int
     component_type_id: int
     stock_item_id: int
-    package_length_mm: int
+    package_length_mm: float
     theoretical_consumption_kg: float
     created_at: datetime
     component_type: Optional[ComponentTypeNested] = None
@@ -103,8 +103,8 @@ class DieTypeNested(BaseModel):  #NEW
 class DieNested(BaseModel):
     id: int
     die_number: str
-    die_diameter_mm: int
-    total_package_length_mm: int
+    die_diameter_mm: float
+    total_package_length_mm: float
     die_type_id: int
     die_type: Optional[DieTypeNested] = None  # NEW
 
@@ -286,7 +286,8 @@ class AssignOperationRequest(BaseModel):
 # WORK ORDER ENDPOINT'LERİ
 # =====================================
 
-@router.get("/", response_model=List[WorkOrderRead])
+# @router.get("/", response_model=List[WorkOrderRead])
+@router.get("/", response_model=List[WorkOrderRead], dependencies=[Depends(require_admin)])
 def list_work_orders(db: Session = Depends(get_db)):
     rows = (
         db.query(WorkOrder)
@@ -305,7 +306,8 @@ def list_work_orders(db: Session = Depends(get_db)):
     return rows
 
 
-@router.get("/{id}", response_model=WorkOrderRead)
+# @router.get("/{id}", response_model=WorkOrderRead)
+@router.get("/{id}", response_model=WorkOrderRead, dependencies=[Depends(require_admin)])
 def get_work_order(id: int, db: Session = Depends(get_db)):
     wo = (
         db.query(WorkOrder)
@@ -326,7 +328,8 @@ def get_work_order(id: int, db: Session = Depends(get_db)):
     return wo
 
 
-@router.post("/", response_model=WorkOrderRead, status_code=201)
+# @router.post("/", response_model=WorkOrderRead, status_code=201)
+@router.post("/", response_model=WorkOrderRead, status_code=201, dependencies=[Depends(require_admin)])
 def create_work_order(payload: WorkOrderCreate, db: Session = Depends(get_db)):
     existing = (
         db.query(WorkOrder)
@@ -361,7 +364,8 @@ def create_work_order(payload: WorkOrderCreate, db: Session = Depends(get_db)):
     return wo
 
 
-@router.patch("/{id}", response_model=WorkOrderRead) 
+# @router.patch("/{id}", response_model=WorkOrderRead)
+@router.patch("/{id}", response_model=WorkOrderRead, dependencies=[Depends(require_admin)])
 def update_work_order(id: int, payload: WorkOrderUpdate, db: Session = Depends(get_db)):
     wo = db.query(WorkOrder).get(id)
     if not wo:
@@ -395,6 +399,10 @@ def update_work_order(id: int, payload: WorkOrderUpdate, db: Session = Depends(g
 
 # Aynı app içinde ama farklı prefix kullanmak için ikinci router'ı da buradan expose edeceğiz.
 ops_router = APIRouter(prefix="/work-order-operations", tags=["Work Order Operations"])
+
+class StartOperationRequest(BaseModel):
+    work_center_id: int
+    operator_name: Optional[str] = None # name değil sicil no yapalım
 
 
 @ops_router.get("/by-work-order/{work_order_id}", response_model=List[WorkOrderOperationRead])
@@ -490,6 +498,7 @@ def list_eligible_operations_for_work_center(work_center_id: int, db: Session = 
 # ---------------------------
 # ASSIGN (eligible -> assigned)
 # ---------------------------
+# Operatör panelinde “uygun iş listesinden seçip merkezi seçip başlat” akışı var — bu endpoint operatör panelinde kullanılacak.
 @ops_router.post("/{id}/assign", response_model=WorkOrderOperationRead)
 def assign_operation(id: int, payload: AssignOperationRequest, db: Session = Depends(get_db)):
     op_row = db.query(WorkOrderOperation).get(id)
@@ -554,7 +563,8 @@ def list_operations_by_work_center(
     return rows
 
 
-@ops_router.post("/", response_model=WorkOrderOperationRead, status_code=201)
+# @ops_router.post("/", response_model=WorkOrderOperationRead, status_code=201)
+@ops_router.post("/", response_model=WorkOrderOperationRead, status_code=201, dependencies=[Depends(require_admin)])
 def create_work_order_operation(
     payload: WorkOrderOperationCreate,
     db: Session = Depends(get_db),
@@ -595,8 +605,16 @@ def update_work_order_operation(
         if isinstance(new_status, str):
             new_status = OperationStatus(new_status)
 
+        def require_work_center(): # operatör starı start_ope ile yapacak buradaki admin yapmak isterse diye
+            if op.work_center_id is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Bu işlem için önce work center atanmış olmalı.",
+                )
+
         # ---- InProgress'e geçerken: önceki operasyonlar tamam mı? ----
         if new_status == OperationStatus.InProgress:
+            require_work_center()
             previous_ops = (
                 db.query(WorkOrderOperation)
                 .filter(
@@ -605,11 +623,7 @@ def update_work_order_operation(
                 )
                 .all()
             )
-            not_completed = [
-                p for p in previous_ops
-                if p.status != OperationStatus.Completed
-            ]
-            if not_completed:
+            if any(p.status != OperationStatus.Completed for p in previous_ops):
                 raise HTTPException(
                     status_code=400,
                     detail="Önceki operasyon(lar) tamamlanmadan bu operasyon başlatılamaz.",
@@ -619,25 +633,22 @@ def update_work_order_operation(
             op.started_at = datetime.now(timezone.utc)
 
             # İstersek operatör adını da burada güncelleriz
-            if "operator_name" in data and data["operator_name"]:
-                op.operator_name = data["operator_name"]
+            # operator adı değil sicil ekleyeceğiz ama buraya değil logda tutucaz
+            # if "operator_name" in data and data["operator_name"]:
+            #     op.operator_name = data["operator_name"]
 
             # Work center'ı meşgul yap
             wc = db.query(WorkCenter).get(op.work_center_id)
             if wc:
                 wc.status = WorkCenterStatus.Busy
 
-            # Bu alanları ayrıca aşağıdaki generic loop'ta set etmeyelim
-            data.pop("operator_name", None)
-
         elif new_status == OperationStatus.Paused:
+            require_work_center()
             op.status = OperationStatus.Paused
-
             # log eklenecek
 
-            data.pop("operator_name", None)
-
         elif new_status == OperationStatus.Cancelled:
+            require_work_center()
             op.status = OperationStatus.Cancelled
             op.completed_at = datetime.now(timezone.utc)
 
@@ -645,12 +656,11 @@ def update_work_order_operation(
             if wc:
                 wc.status = WorkCenterStatus.Available
 
-            data.pop("operator_name", None)
-
             # log eklenecek
 
         # ---- Completed'a geçerken: bitiş tarihi ve work center durumu ----
         elif new_status == OperationStatus.Completed:
+            require_work_center()
             op.status = OperationStatus.Completed
             op.completed_at = datetime.now(timezone.utc)
 
@@ -664,6 +674,7 @@ def update_work_order_operation(
 
         # Generic loop'ta bir daha status set etmeyelim
         data.pop("status", None)
+        
 
     # status dışındaki alanları generic olarak güncelle
     for field, value in data.items():
@@ -677,3 +688,177 @@ def update_work_order_operation(
         .get(op.id)
     )
     return op
+
+
+@ops_router.post("/{id}/start", response_model=WorkOrderOperationRead)
+def start_operation(
+    id: int,
+    payload: StartOperationRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Eğer operasyon zaten assigned değilse → seçilen work_center’a assign eder
+    Zaten başka merkeze assigned ise → 400
+    Status Waiting veya Paused ise başlatır
+    Önceki operasyonlar tamam mı kontrol eder
+    started_at set eder
+    WorkCenter → Busy yapar
+    """
+    op_row = (
+        db.query(WorkOrderOperation)
+        .options(joinedload(WorkOrderOperation.work_center),
+                 joinedload(WorkOrderOperation.operation_type))
+        .get(id)
+    )
+    if not op_row:
+        raise HTTPException(status_code=404, detail="Work order operation not found")
+
+    # sadece Waiting / Paused başlatılabilir
+    if op_row.status not in (OperationStatus.Waiting, OperationStatus.Paused):
+        raise HTTPException(status_code=400, detail="Only Waiting/Paused operations can be started")
+
+    # work center ataması: yoksa ata, varsa aynı mı kontrol et
+    if op_row.work_center_id is None:
+        wc = (
+            db.query(WorkCenter)
+            .options(joinedload(WorkCenter.operation_types))
+            .get(payload.work_center_id)
+        )
+        if not wc:
+            raise HTTPException(status_code=404, detail="Work center not found")
+
+        allowed_ids = {ot.id for ot in wc.operation_types}
+        if op_row.operation_type_id not in allowed_ids:
+            raise HTTPException(status_code=400, detail="This work center cannot perform this operation type")
+
+        op_row.work_center_id = wc.id
+
+    else:
+        # zaten assigned ise farklı bir wc ile start edilemesin
+        if op_row.work_center_id != payload.work_center_id:
+            raise HTTPException(status_code=400, detail="Operation is already assigned to another work center")
+
+        wc = db.query(WorkCenter).get(op_row.work_center_id)
+        if not wc:
+            raise HTTPException(status_code=404, detail="Assigned work center not found")
+
+    # önceki operasyonlar tamam mı?
+    previous_ops = (
+        db.query(WorkOrderOperation)
+        .filter(
+            WorkOrderOperation.work_order_id == op_row.work_order_id,
+            WorkOrderOperation.sequence_number < op_row.sequence_number,
+        )
+        .all()
+    )
+    not_completed = [p for p in previous_ops if p.status != OperationStatus.Completed]
+    if not_completed:
+        raise HTTPException(
+            status_code=400,
+            detail="Önceki operasyon(lar) tamamlanmadan bu operasyon başlatılamaz.",
+        )
+
+    # başlat
+    op_row.status = OperationStatus.InProgress
+    op_row.started_at = datetime.now(timezone.utc)
+
+    if payload.operator_name:
+        op_row.operator_name = payload.operator_name
+
+    # work center busy
+    wc.status = WorkCenterStatus.Busy
+
+    db.commit()
+    db.refresh(op_row)
+
+    op_row = (
+        db.query(WorkOrderOperation)
+        .options(
+            joinedload(WorkOrderOperation.work_center),
+            joinedload(WorkOrderOperation.operation_type),
+        )
+        .get(op_row.id)
+    )
+    return op_row
+
+
+class AvailableForOperatorRequest(BaseModel):
+    operator_id: int
+    operation_type_id: int
+
+
+# Seçilen operation type + önceki işlemler tamam
+# Operator’un izinli work center’ları içinden, seçilen operation_type_id için, başlatılabilir operasyonlar listesi
+@ops_router.post("/available-for-operator", response_model=List[WorkOrderOperationWithWorkOrderRead])
+def available_for_operator(payload: AvailableForOperatorRequest, db: Session = Depends(get_db)):
+    # operator + work centers + their op types
+    op = (
+        db.query(Operator)
+        .options(joinedload(Operator.work_centers).joinedload(WorkCenter.operation_types))
+        .get(payload.operator_id)
+    )
+    if not op:
+        raise HTTPException(status_code=404, detail="Operator not found")
+
+    allowed_wc_ids = [wc.id for wc in op.work_centers]
+    if not allowed_wc_ids:
+        return []
+
+    # operatorın izinli WC’leri içinde bu operation type’ı yapabilen WC var mı?
+    eligible_wc_ids = []
+    for wc in op.work_centers:
+        if any(ot.id == payload.operation_type_id for ot in wc.operation_types):
+            eligible_wc_ids.append(wc.id)
+
+    if not eligible_wc_ids:
+        return []
+
+    # previous ops completed check: NOT EXISTS (previous not completed)
+    prev_not_completed = exists().where(and_(
+        WorkOrderOperation.work_order_id == WorkOrderOperation.work_order_id,  # placeholder; aşağıda correlate edeceğiz
+    ))
+
+    # SQLAlchemy correlate için doğru kullanım:
+    prev_not_completed = (
+        db.query(WorkOrderOperation.id)
+        .filter(
+            WorkOrderOperation.work_order_id == WorkOrderOperation.work_order_id,  # correlate
+        )
+    )
+
+    # Daha net yazalım: alias ile
+    from sqlalchemy.orm import aliased
+    Prev = aliased(WorkOrderOperation)
+
+    rows = (
+        db.query(WorkOrderOperation)  
+        .options(
+            joinedload(WorkOrderOperation.operation_type),
+            joinedload(WorkOrderOperation.work_order)
+                .joinedload(WorkOrder.die_component)
+                .joinedload(DieComponent.component_type),
+            joinedload(WorkOrderOperation.work_order)
+                .joinedload(WorkOrder.production_order)
+                .joinedload(ProductionOrder.die)
+                .joinedload(Die.die_type),
+            joinedload(WorkOrderOperation.work_order)
+                .joinedload(WorkOrder.production_order)
+                .joinedload(ProductionOrder.die)
+                .joinedload(Die.files),
+        )
+        .filter(
+            WorkOrderOperation.status == OperationStatus.Waiting,
+            WorkOrderOperation.work_center_id.is_(None),
+            WorkOrderOperation.operation_type_id == payload.operation_type_id,
+            ~exists().where(and_(
+                Prev.work_order_id == WorkOrderOperation.work_order_id,
+                Prev.sequence_number < WorkOrderOperation.sequence_number,
+                Prev.status != OperationStatus.Completed,
+            ))
+        )
+        .order_by(WorkOrderOperation.created_at.asc())
+        .all()
+    )
+    return rows
+
+

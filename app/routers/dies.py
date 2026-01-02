@@ -16,6 +16,8 @@ from ..models import (
     ComponentType,
     SteelStockItem,
 )
+from ..deps import require_admin
+
 
 router = APIRouter(prefix="/dies", tags=["Dies"])
 
@@ -68,8 +70,8 @@ class FileRead(BaseModel):
 
 class DieBase(BaseModel):
     die_number: str
-    die_diameter_mm: int
-    total_package_length_mm: int
+    die_diameter_mm: float
+    total_package_length_mm: float
     die_type_id: int
     
     profile_no: Optional[str] = None
@@ -78,10 +80,21 @@ class DieBase(BaseModel):
     press_code: Optional[str] = None
 
 
+class DieComponentBase(BaseModel):
+    component_type_id: int
+    stock_item_id: int
+    package_length_mm: float
+    theoretical_consumption_kg: float
+
+
+class DieComponentCreate(DieComponentBase):
+    pass
+
+
 class DieCreateIn(BaseModel):
     die_number: str
-    die_diameter_mm: int
-    total_package_length_mm: int
+    die_diameter_mm: float
+    total_package_length_mm: float
     die_type_id: int
 
     profile_no: Optional[str] = None
@@ -89,6 +102,8 @@ class DieCreateIn(BaseModel):
     customer_name: Optional[str] = None
     press_code: Optional[str] = None
     # ... profile_no, figure_count, customer_name, press_code, is_fason
+
+    components: List[DieComponentCreate] = []
 
 
 class DieCreate(DieBase):
@@ -107,8 +122,8 @@ class DieRead(DieBase):
     id: int
 
     die_number: str # NEW
-    die_diameter_mm: int
-    total_package_length_mm: int
+    die_diameter_mm: float
+    total_package_length_mm: float
     die_type_id: int
 
     status: DieStatus
@@ -119,20 +134,10 @@ class DieRead(DieBase):
     files: List["FileRead"] = []
 
     model_config = ConfigDict(from_attributes=True)
+DieRead.model_rebuild()
 
 
 # ---- DieComponent ----
-
-class DieComponentBase(BaseModel):
-    component_type_id: int
-    stock_item_id: int
-    package_length_mm: int
-    theoretical_consumption_kg: float
-
-
-class DieComponentCreate(DieComponentBase):
-    pass
-
 
 class DieComponentRead(DieComponentBase):
     id: int
@@ -186,7 +191,61 @@ def get_die(die_id: int, db: Session = Depends(get_db)):
     return DieRead.model_validate(die_dict)
 
 
-@router.post("/", response_model=DieRead, status_code=201)
+# @router.post("/", response_model=DieRead, status_code=201)
+# @router.post("/", response_model=DieRead, status_code=201, dependencies=[Depends(require_admin)])
+# def create_die(
+#     payload: str = Form(...),
+#     design_files: List[UploadFile] = UploadFileField([]),
+#     db: Session = Depends(get_db),
+# ):
+#     # 1) payload json parse + validate
+#     try:
+#         data = json.loads(payload)
+#         p = DieCreateIn.model_validate(data)
+#     except Exception as e:
+#         raise HTTPException(status_code=400, detail=f"Invalid payload: {e}")
+
+#     # 2) uniq kontrol
+#     existing = db.query(Die).filter(Die.die_number == p.die_number).first()
+#     if existing:
+#         raise HTTPException(status_code=400, detail="Die number already exists")
+
+#     # 3) die oluştur
+#     die = Die(
+#         die_number=p.die_number,
+#         die_diameter_mm=p.die_diameter_mm,
+#         total_package_length_mm=p.total_package_length_mm,
+#         die_type_id=p.die_type_id,
+#         status=DieStatus.Draft,
+
+#         profile_no=p.profile_no,
+#         figure_count=p.figure_count,
+#         customer_name=p.customer_name,
+#         press_code=p.press_code,
+#     )
+#     db.add(die)
+#     db.flush()  # die.id lazım
+
+#     # 4) dosyalar varsa kaydet + File kayıtları bas
+#     first_url: Optional[str] = None
+#     for f in design_files or []:
+#         save_uploaded_file(
+#             db=db,
+#             upload=f,
+#             entity_type="die",
+#             entity_id=die.id,
+#         )
+
+#     db.commit()
+
+#     die = (
+#         db.query(Die)
+#         .options(joinedload(Die.die_type), joinedload(Die.files))
+#         .get(die.id)
+#     )
+#     return die
+
+@router.post("/", response_model=DieRead, status_code=201, dependencies=[Depends(require_admin)])
 def create_die(
     payload: str = Form(...),
     design_files: List[UploadFile] = UploadFileField([]),
@@ -199,48 +258,124 @@ def create_die(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid payload: {e}")
 
+    # 1.1) components zorunlu olsun (senin akışına göre)
+    if not p.components or len(p.components) == 0:
+        raise HTTPException(status_code=400, detail="Components are required")
+
     # 2) uniq kontrol
     existing = db.query(Die).filter(Die.die_number == p.die_number).first()
     if existing:
         raise HTTPException(status_code=400, detail="Die number already exists")
 
-    # 3) die oluştur
-    die = Die(
-        die_number=p.die_number,
-        die_diameter_mm=p.die_diameter_mm,
-        total_package_length_mm=p.total_package_length_mm,
-        die_type_id=p.die_type_id,
-        status=DieStatus.Draft,
+    # 3) referans kontrolleri (daha erken patlasın)
+    die_type = db.query(DieType).get(p.die_type_id)
+    if not die_type:
+        raise HTTPException(status_code=400, detail="Invalid die_type_id")
 
-        profile_no=p.profile_no,
-        figure_count=p.figure_count,
-        customer_name=p.customer_name,
-        press_code=p.press_code,
+    # component validations (id var mı, stock var mı, duplicate var mı)
+    seen_component_type_ids = set()
+
+    component_type_ids = [c.component_type_id for c in p.components]
+    stock_item_ids = [c.stock_item_id for c in p.components]
+
+    # duplicate component_type_id kontrolü
+    for cid in component_type_ids:
+        if cid in seen_component_type_ids:
+            raise HTTPException(status_code=400, detail=f"Duplicate component_type_id in payload: {cid}")
+        seen_component_type_ids.add(cid)
+
+    # toplu fetch (performans + doğruluk)
+    # existing_component_types = {
+    #     ct.id for ct in db.query(ComponentType.id).filter(ComponentType.id.in_(component_type_ids)).all()
+    # }
+    existing_component_types = set(
+        r[0] for r in db.query(ComponentType.id)
+        .filter(ComponentType.id.in_(component_type_ids))
+        .all()
     )
-    db.add(die)
-    db.flush()  # die.id lazım
 
-    # 4) dosyalar varsa kaydet + File kayıtları bas
-    first_url: Optional[str] = None
-    for f in design_files or []:
-        save_uploaded_file(
-            db=db,
-            upload=f,
-            entity_type="die",
-            entity_id=die.id,
+    missing_ct = [cid for cid in component_type_ids if cid not in existing_component_types]
+    if missing_ct:
+        raise HTTPException(status_code=400, detail=f"Invalid component_type_id(s): {missing_ct}")
+
+    # existing_stock_items = {
+    #     si.id for si in db.query(SteelStockItem.id).filter(SteelStockItem.id.in_(stock_item_ids)).all()
+    # }
+    existing_stock_items = set(
+        r[0] for r in db.query(SteelStockItem.id)
+        .filter(SteelStockItem.id.in_(stock_item_ids))
+        .all()
+    )
+    missing_si = [sid for sid in stock_item_ids if sid not in existing_stock_items]
+    if missing_si:
+        raise HTTPException(status_code=400, detail=f"Invalid stock_item_id(s): {missing_si}")
+
+    # numeric sanity checks (NaN burada gelmez çünkü pydantic parse ediyor ama 0 kontrolü önemli)
+    for c in p.components:
+        if c.package_length_mm <= 0:
+            raise HTTPException(status_code=400, detail="package_length_mm must be > 0")
+        if c.theoretical_consumption_kg <= 0:
+            raise HTTPException(status_code=400, detail="theoretical_consumption_kg must be > 0")
+
+    # 4) atomik transaction
+    try:
+        die = Die(
+            die_number=p.die_number,
+            die_diameter_mm=p.die_diameter_mm,
+            total_package_length_mm=p.total_package_length_mm,
+            die_type_id=p.die_type_id,
+            status=DieStatus.Draft,
+            profile_no=p.profile_no,
+            figure_count=p.figure_count,
+            customer_name=p.customer_name,
+            press_code=p.press_code,
         )
+        db.add(die)
+        db.flush()  # die.id lazım
 
-    db.commit()
+        # 4.1) dosyalar
+        for f in design_files or []:
+            save_uploaded_file(
+                db=db,
+                upload=f,
+                entity_type="die",
+                entity_id=die.id,
+            )
 
+        # 4.2) bileşenler (bulk create)
+        for c in p.components:
+            comp = DieComponent(
+                die_id=die.id,
+                component_type_id=c.component_type_id,
+                stock_item_id=c.stock_item_id,
+                package_length_mm=c.package_length_mm,
+                theoretical_consumption_kg=c.theoretical_consumption_kg,
+            )
+            db.add(comp)
+
+        db.commit()
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Create die failed: {e}")
+
+    # 5) response (die_type_ref + files)
     die = (
         db.query(Die)
         .options(joinedload(Die.die_type), joinedload(Die.files))
         .get(die.id)
     )
-    return die
+
+    die_dict = DieRead.model_validate(die).model_dump()
+    die_dict["die_type_ref"] = DieTypeRef.model_validate(die.die_type) if die.die_type else None
+    return DieRead.model_validate(die_dict)
 
 
-@router.patch("/{die_id}", response_model=DieRead)
+# @router.patch("/{die_id}", response_model=DieRead)
+@router.patch("/{die_id}", response_model=DieRead, dependencies=[Depends(require_admin)])
 def update_die(
     die_id: int,
     payload: DieUpdate,
@@ -294,7 +429,8 @@ def list_die_components(die_id: int, db: Session = Depends(get_db)):
     return components
 
 
-@router.post("/{die_id}/components", response_model=DieComponentRead, status_code=201)
+# @router.post("/{die_id}/components", response_model=DieComponentRead, status_code=201)
+@router.post("/{die_id}/components", response_model=DieComponentRead, status_code=201, dependencies=[Depends(require_admin)])
 def create_die_component(
     die_id: int,
     payload: DieComponentCreate,

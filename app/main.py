@@ -6,6 +6,7 @@ from .config import settings
 
 from .database import engine, Base
 from .routers import inventory, operators, operation_types, die_config, dies, production_orders, component_bom, work_orders
+from app.routers.auth import router as auth_router
 
 app = FastAPI(
     title="Die Shop API",
@@ -13,7 +14,7 @@ app = FastAPI(
     # root_path="/api",
 )
 
-Base.metadata.create_all(bind=engine)
+# Base.metadata.create_all(bind=engine)
 # CORS (React'in bağlanabilmesi için)
 origins = [
     "http://localhost:5173",  # Vite ise
@@ -31,6 +32,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth_router)
 app.include_router(inventory.router)
 app.include_router(die_config.router)
 app.include_router(dies.router)

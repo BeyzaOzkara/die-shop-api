@@ -4,10 +4,12 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
 from pydantic import BaseModel, ConfigDict
-from datetime import datetime
+from datetime import datetime, timezone
 
 from ..database import get_db
 from ..models import DieType, ComponentType, DieTypeComponent
+from ..deps import require_admin
+
 
 router = APIRouter(prefix="/die-config", tags=["Die Configuration"])
 
@@ -115,7 +117,8 @@ class ComponentTypeOnlyRead(ComponentTypeNested):
 # DieTypes
 # =====================================
 
-@router.get("/die-types", response_model=List[DieTypeRead])
+# @router.get("/die-types", response_model=List[DieTypeRead])
+@router.get("/die-types", response_model=List[DieTypeRead], dependencies=[Depends(require_admin)])
 def list_die_types(db: Session = Depends(get_db)):
     return db.query(DieType).order_by(DieType.name).all()
 
@@ -128,7 +131,8 @@ def list_active_die_types(db: Session = Depends(get_db)):
         .all()
     )
 
-@router.post("/die-types", response_model=DieTypeRead, status_code=201)
+# @router.post("/die-types", response_model=DieTypeRead, status_code=201)
+@router.post("/die-types", response_model=DieTypeRead, status_code=201, dependencies=[Depends(require_admin)])
 def create_die_type(payload: DieTypeCreate, db: Session = Depends(get_db)):
     existing = db.query(DieType).filter(DieType.code == payload.code).first()
     if existing:
@@ -141,7 +145,8 @@ def create_die_type(payload: DieTypeCreate, db: Session = Depends(get_db)):
     return dt
 
 
-@router.patch("/die-types/{id}", response_model=DieTypeRead)
+# @router.patch("/die-types/{id}", response_model=DieTypeRead)
+@router.patch("/die-types/{id}", response_model=DieTypeRead, dependencies=[Depends(require_admin)])
 def update_die_type(id: int, payload: DieTypeUpdate, db: Session = Depends(get_db)):
     dt = db.query(DieType).get(id)
     if not dt:
@@ -150,14 +155,15 @@ def update_die_type(id: int, payload: DieTypeUpdate, db: Session = Depends(get_d
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(dt, field, value)
 
-    dt.updated_at = datetime.utcnow()
+    dt.updated_at = datetime.now(timezone.utc)  # = datetime.utcnow()
 
     db.commit()
     db.refresh(dt)
     return dt
 
 
-@router.delete("/die-types/{id}", status_code=204)
+# @router.delete("/die-types/{id}", status_code=204)
+@router.delete("/die-types/{id}", status_code=204, dependencies=[Depends(require_admin)])
 def delete_die_type(id: int, db: Session = Depends(get_db)):
     dt = db.query(DieType).get(id)
     if not dt:
@@ -172,7 +178,8 @@ def delete_die_type(id: int, db: Session = Depends(get_db)):
 # ComponentTypes
 # =====================================
 
-@router.get("/component-types", response_model=List[ComponentTypeRead])
+# @router.get("/component-types", response_model=List[ComponentTypeRead])
+@router.get("/component-types", response_model=List[ComponentTypeRead], dependencies=[Depends(require_admin)])
 def list_component_types(db: Session = Depends(get_db)):
     return db.query(ComponentType).order_by(ComponentType.name).all()
 
@@ -187,7 +194,8 @@ def list_active_component_types(db: Session = Depends(get_db)):
     )
 
 
-@router.post("/component-types", response_model=ComponentTypeRead, status_code=201)
+# @router.post("/component-types", response_model=ComponentTypeRead, status_code=201)
+@router.post("/component-types", response_model=ComponentTypeRead, status_code=201, dependencies=[Depends(require_admin)])
 def create_component_type(payload: ComponentTypeCreate, db: Session = Depends(get_db)):
     existing = db.query(ComponentType).filter(ComponentType.code == payload.code).first()
     if existing:
@@ -200,20 +208,13 @@ def create_component_type(payload: ComponentTypeCreate, db: Session = Depends(ge
     return ct
 
 
-@router.patch("/component-types/{id}", response_model=ComponentTypeRead)
+# @router.patch("/component-types/{id}", response_model=ComponentTypeRead)
+@router.patch("/component-types/{id}", response_model=ComponentTypeRead, dependencies=[Depends(require_admin)])
 def update_component_type(id: int, payload: ComponentTypeUpdate, db: Session = Depends(get_db)):
     ct = db.query(ComponentType).get(id)
     if not ct:
         raise HTTPException(status_code=404, detail="Component type not found")
 
-    # for field, value in payload.model_dump(exclude_unset=True).items():
-    #     setattr(ct, field, value)
-
-    # ct.updated_at = datetime.utcnow()
-
-    # db.commit()
-    # db.refresh(ct)
-    # return ct
     data = payload.model_dump(exclude_unset=True)
 
     # code normalize + unique check
@@ -233,14 +234,15 @@ def update_component_type(id: int, payload: ComponentTypeUpdate, db: Session = D
     for field, value in data.items():
         setattr(ct, field, value)
     
-    ct.updated_at = datetime.utcnow()
+    ct.updated_at = datetime.now(timezone.utc) # datetime.utcnow()
 
     db.commit()
     db.refresh(ct)
     return ct
 
 
-@router.delete("/component-types/{id}", status_code=204)
+# @router.delete("/component-types/{id}", status_code=204)
+@router.delete("/component-types/{id}", status_code=204, dependencies=[Depends(require_admin)])
 def delete_component_type(id: int, db: Session = Depends(get_db)):
     ct = db.query(ComponentType).get(id)
     if not ct:
@@ -255,7 +257,8 @@ def delete_component_type(id: int, db: Session = Depends(get_db)):
 # DieTypeComponent (mapping)
 # =====================================
 
-@router.get("/die-type-components", response_model=List[DieTypeComponentRead])
+# @router.get("/die-type-components", response_model=List[DieTypeComponentRead])
+@router.get("/die-type-components", response_model=List[DieTypeComponentRead], dependencies=[Depends(require_admin)])
 def list_die_type_components(db: Session = Depends(get_db)):
     rows = (
         db.query(DieTypeComponent)
@@ -269,10 +272,7 @@ def list_die_type_components(db: Session = Depends(get_db)):
     return rows
 
 
-@router.get(
-    "/die-types/{die_type_id}/components",
-    response_model=List[ComponentTypeOnlyRead],
-)
+@router.get("/die-types/{die_type_id}/components", response_model=List[ComponentTypeOnlyRead],)
 def list_components_for_die_type(die_type_id: int, db: Session = Depends(get_db)):
     mappings = (
         db.query(DieTypeComponent)
@@ -287,7 +287,8 @@ def list_components_for_die_type(die_type_id: int, db: Session = Depends(get_db)
     return result
 
 
-@router.post("/die-type-components", response_model=DieTypeComponentRead, status_code=201)
+# @router.post("/die-type-components", response_model=DieTypeComponentRead, status_code=201)
+@router.post("/die-type-components", response_model=DieTypeComponentRead, status_code=201, dependencies=[Depends(require_admin)])
 def create_die_type_component(
     payload: DieTypeComponentCreate,
     db: Session = Depends(get_db),
@@ -323,7 +324,8 @@ def create_die_type_component(
     return mapping
 
 
-@router.delete("/die-type-components", status_code=204)
+# @router.delete("/die-type-components", status_code=204)
+@router.delete("/die-type-components", status_code=204, dependencies=[Depends(require_admin)])
 def delete_die_type_component(
     die_type_id: int = Query(...),
     component_type_id: int = Query(...),

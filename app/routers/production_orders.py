@@ -4,7 +4,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 from pydantic import BaseModel, ConfigDict
-from datetime import datetime
+from datetime import datetime, timezone
 
 from ..database import get_db
 from ..models import (
@@ -19,6 +19,8 @@ from ..models import (
     DieStatus,
 )
 from ..order_number_helper import generate_production_order_number, generate_work_order_number
+from ..deps import require_admin
+
 
 router = APIRouter(prefix="/production-orders", tags=["Production Orders"])
 
@@ -117,7 +119,8 @@ def get_production_order(id: int, db: Session = Depends(get_db)):
 # Sadece production_order tablosuna kayıt aç
 # status = 'Waiting'
 # iş emri/operasyon üretme
-@router.post("/", response_model=ProductionOrderRead, status_code=201)
+# @router.post("/", response_model=ProductionOrderRead, status_code=201)
+@router.post("/", response_model=ProductionOrderRead, status_code=201, dependencies=[Depends(require_admin)])
 def create_production_order(
     payload: ProductionOrderCreate,
     db: Session = Depends(get_db),
@@ -149,18 +152,9 @@ def create_production_order(
     )
     return po
 
-# Örn: POST /{id}/generate-work-orders
-# @router.post("/{id}/generate-work-orders", response_model=ProductionOrderRead, status_code=201)
-# def generate_work_orders_for_production_order(production_order_id: int):
-#     # production_order → die
-#     # die → die_components
-#     # component_type → component_bom
-#     # BURADA iş emirleri (work_orders) ve operasyonlarını (work_order_operations) oluştur
-#     # Sonunda production_order.status = "In Progress" yapabilirsin,
-#     # ya da status update için ayrı endpoint bırakabilirsin (frontend tarafında zaten var).
-#     pass
 
-@router.post("/{id}/generate-work-orders", response_model=ProductionOrderRead, status_code=201)
+# @router.post("/{id}/generate-work-orders", response_model=ProductionOrderRead, status_code=201)
+@router.post("/{id}/generate-work-orders", response_model=ProductionOrderRead, status_code=201, dependencies=[Depends(require_admin)])
 def generate_work_orders_for_production_order(
     id: int,
     db: Session = Depends(get_db),
@@ -183,6 +177,10 @@ def generate_work_orders_for_production_order(
 
     if not die.components:
         raise HTTPException(status_code=400, detail="Die has no components")
+
+    existing_wo = db.query(WorkOrder).filter(WorkOrder.production_order_id == po.id).first()
+    if existing_wo:
+        raise HTTPException(status_code=400, detail="Work orders already generated for this production order")
 
     # 2) Her bileşen için iş emri + operasyonları oluştur
     index = 1
@@ -214,8 +212,10 @@ def generate_work_orders_for_production_order(
                 work_order_id=wo.id,
                 sequence_number=bom.sequence_number,
                 operation_type_id = bom.operation_type_id,
-                operation_name=bom.operation_type.name,  # snapshot (istersen None da yaparsın)
-                work_center_id=bom.preferred_work_center_id,  # NULL olabilir
+                operation_name=bom.operation_name,
+                # operation_name=bom.operation_type.name,  # snapshot (istersen None da yaparsın)
+                # work_center_id=bom.preferred_work_center_id,  # NULL olabilir
+                work_center_id=None,
                 estimated_duration_minutes=bom.estimated_duration_minutes,
                 notes=bom.notes,
                 status=OperationStatus.Waiting,
@@ -226,7 +226,7 @@ def generate_work_orders_for_production_order(
     die.status = DieStatus.InProduction
     po.status = OrderStatus.InProgress
     if not po.started_at:
-        po.started_at = datetime.utcnow()
+        po.started_at = datetime.now(timezone.utc)
 
     db.commit()
 
@@ -239,7 +239,8 @@ def generate_work_orders_for_production_order(
     )
     return po
 
-@router.patch("/{id}", response_model=ProductionOrderRead)
+# @router.patch("/{id}", response_model=ProductionOrderRead)
+@router.patch("/{id}", response_model=ProductionOrderRead, dependencies=[Depends(require_admin)])
 def update_production_order(
     id: int,
     payload: ProductionOrderUpdate,
@@ -262,7 +263,6 @@ def update_production_order(
             po.status = OrderStatus(data["status"])
 
         # started_at / finished_at mantığı:
-        from datetime import datetime, timezone
 
         if po.status == OrderStatus.InProgress:
             po.started_at = datetime.now(timezone.utc)

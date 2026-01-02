@@ -15,6 +15,8 @@ from ..models import (
     StockMovement,
     OperationType,
 )
+from ..deps import require_admin
+
 
 router = APIRouter(prefix="/inventory", tags=["Inventory"])
 
@@ -152,7 +154,8 @@ def list_work_centers(db: Session = Depends(get_db)):
     )
 
 
-@router.post("/work-centers", response_model=WorkCenterRead, status_code=201)
+# @router.post("/work-centers", response_model=WorkCenterRead, status_code=201)
+@router.post("/work-centers", response_model=WorkCenterRead, status_code=201, dependencies=[Depends(require_admin)])
 def create_work_center(payload: WorkCenterCreate, db: Session = Depends(get_db)):
     wc = WorkCenter(
         name=payload.name,
@@ -177,7 +180,8 @@ def create_work_center(payload: WorkCenterCreate, db: Session = Depends(get_db))
     db.refresh(wc, attribute_names=["operation_types"])
     return wc
 
-@router.delete("/work-centers/{id}", status_code=204)
+# @router.delete("/work-centers/{id}", status_code=204)
+@router.delete("/work-centers/{id}", status_code=204, dependencies=[Depends(require_admin)])
 def delete_work_center(id: int, db: Session = Depends(get_db)):
     wc = db.query(WorkCenter).get(id)
     if not wc:
@@ -186,7 +190,8 @@ def delete_work_center(id: int, db: Session = Depends(get_db)):
     db.commit()
     return
 
-@router.patch("/work-centers/{id}", response_model=WorkCenterRead)
+# @router.patch("/work-centers/{id}", response_model=WorkCenterRead)
+@router.patch("/work-centers/{id}", response_model=WorkCenterRead, dependencies=[Depends(require_admin)])
 def update_work_center(id: int, payload: WorkCenterUpdate, db: Session = Depends(get_db)):
     wc = (
         db.query(WorkCenter)
@@ -205,7 +210,6 @@ def update_work_center(id: int, payload: WorkCenterUpdate, db: Session = Depends
 
     # M2M replace
     if "operation_type_ids" in data:
-        from ..models import OperationType
         ids = data["operation_type_ids"] or []
         ots = db.query(OperationType).filter(OperationType.id.in_(ids)).all() if ids else []
         wc.operation_types = ots
@@ -227,7 +231,8 @@ def list_steel_stock_items(db: Session = Depends(get_db)):
         .all()
     )
 
-@router.post("/steel-stock-items", response_model=SteelStockItemRead, status_code=201)
+# @router.post("/steel-stock-items", response_model=SteelStockItemRead, status_code=201)
+@router.post("/steel-stock-items", response_model=SteelStockItemRead, status_code=201, dependencies=[Depends(require_admin)])
 def create_steel_stock_item(payload: SteelStockItemCreate, db: Session = Depends(get_db)):
     item = SteelStockItem(**payload.model_dump())
     db.add(item)
@@ -263,7 +268,8 @@ def list_lots_by_stock_item(
     lots = query.order_by(Lot.received_date.asc()).all()
     return lots
 
-@router.post("/lots", response_model=LotRead, status_code=201)
+# @router.post("/lots", response_model=LotRead, status_code=201)
+@router.post("/lots", response_model=LotRead, status_code=201, dependencies=[Depends(require_admin)])
 def create_lot(payload: LotCreate, db: Session = Depends(get_db)):
     lot = Lot(**payload.model_dump())
     db.add(lot)
@@ -280,7 +286,8 @@ def get_lot_remaining(lot_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Lot not found")
     return LotRemainingRead(id=lot.id, remaining_kg=float(lot.remaining_kg))
 
-@router.patch("/lots/{lot_id}/remaining", response_model=LotRead)
+# @router.patch("/lots/{lot_id}/remaining", response_model=LotRead)
+@router.patch("/lots/{lot_id}/remaining", response_model=LotRead, dependencies=[Depends(require_admin)])
 def update_lot_remaining(lot_id: int, payload: LotUpdateRemaining, db: Session = Depends(get_db)):
     lot = db.query(Lot).options(joinedload(Lot.stock_item)).get(lot_id)
     if not lot:
@@ -294,7 +301,8 @@ def update_lot_remaining(lot_id: int, payload: LotUpdateRemaining, db: Session =
 # Stock Movements
 # =========================
 
-@router.post("/stock-movements", response_model=StockMovementRead, status_code=201)
+# @router.post("/stock-movements", response_model=StockMovementRead, status_code=201)
+@router.post("/stock-movements", response_model=StockMovementRead, status_code=201, dependencies=[Depends(require_admin)])
 def create_stock_movement(payload: StockMovementCreate, db: Session = Depends(get_db)):
     movement = StockMovement(**payload.model_dump())
     db.add(movement)
