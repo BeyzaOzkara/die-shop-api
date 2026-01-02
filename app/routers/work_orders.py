@@ -443,7 +443,8 @@ def list_assigned_operations_by_work_center(work_center_id: int, db: Session = D
                 .joinedload(ProductionOrder.die)
                 .joinedload(Die.files),
         )
-        .filter(WorkOrderOperation.work_center_id == work_center_id)
+        .filter(WorkOrderOperation.work_center_id == work_center_id,
+        WorkOrderOperation.status.in_([OperationStatus.Waiting, OperationStatus.InProgress, OperationStatus.Paused]),)
         .order_by(WorkOrderOperation.created_at.asc())
         .all()
     )
@@ -556,7 +557,8 @@ def list_operations_by_work_center(
             joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.production_order).joinedload(ProductionOrder.die).joinedload(Die.die_type),
             joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.production_order).joinedload(ProductionOrder.die).joinedload(Die.files),
         )
-        .filter(WorkOrderOperation.work_center_id == work_center_id)
+        .filter(WorkOrderOperation.work_center_id == work_center_id,
+        WorkOrderOperation.status.in_([OperationStatus.Waiting, OperationStatus.InProgress, OperationStatus.Paused]),)
         .order_by(WorkOrderOperation.created_at.asc())
         .all()
     )
