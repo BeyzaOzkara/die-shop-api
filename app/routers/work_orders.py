@@ -281,6 +281,16 @@ class AssignOperationRequest(BaseModel):
     work_center_id: int
     operator_name: Optional[str] = None
 
+class LotForSawRead(BaseModel):
+    id: int
+    certificate_number: str
+    supplier: str
+    length_mm: int
+    gross_weight_kg: float
+    remaining_kg: float
+    received_date: datetime
+
+    model_config = ConfigDict(from_attributes=True)
 
 # =====================================
 # WORK ORDER ENDPOINT'LERİ
@@ -864,3 +874,146 @@ def available_for_operator(payload: AvailableForOperatorRequest, db: Session = D
     return rows
 
 
+@ops_router.get("/{operation_id}/available-lots", response_model=List[LotForSawRead])
+def list_available_lots_for_operation(operation_id: int, db: Session = Depends(get_db)):
+    op = (
+        db.query(WorkOrderOperation)
+        .options(
+            joinedload(WorkOrderOperation.work_order)
+                .joinedload(WorkOrder.die_component)
+        )
+        .get(operation_id)
+    )
+    if not op:
+        raise HTTPException(status_code=404, detail="Work order operation not found")
+
+    if not op.work_order or not op.work_order.die_component:
+        raise HTTPException(status_code=400, detail="Operation has no work order / die component")
+
+    stock_item_id = op.work_order.die_component.stock_item_id
+
+    lots = (
+        db.query(Lot)
+        .filter(
+            Lot.stock_item_id == stock_item_id,
+            Lot.remaining_kg > 0
+        )
+        .order_by(Lot.received_date.asc())
+        .all()
+    )
+    return lots
+
+class CompleteSawRequest(BaseModel):
+    lot_id: int
+    quantity_kg: float
+    note: Optional[str] = None
+
+
+@ops_router.post("/{operation_id}/complete-saw", response_model=WorkOrderOperationRead)
+def complete_saw_operation(operation_id: int, payload: CompleteSawRequest, db: Session = Depends(get_db)):
+    """
+    TESTERE operasyonu tamamlanırken:
+    - Lot seçilir
+    - quantity_kg kadar lot.remaining_kg düşülür
+    - StockMovement yazılır
+    - WorkOrder.lot_id set edilir (+ actual_consumption_kg opsiyonel güncellenir)
+    - Operation Completed + wc Available
+    """
+    op = (
+        db.query(WorkOrderOperation)
+        .options(
+            joinedload(WorkOrderOperation.work_center),
+            joinedload(WorkOrderOperation.work_order)
+                .joinedload(WorkOrder.die_component),
+            joinedload(WorkOrderOperation.operation_type),
+        )
+        .get(operation_id)
+    )
+    if not op:
+        raise HTTPException(status_code=404, detail="Work order operation not found")
+
+    # sadece atanmış operasyon tamamlanabilir
+    if op.work_center_id is None:
+        raise HTTPException(status_code=400, detail="Work center must be assigned before completing")
+
+    # zaten Completed/Cancelled ise engelle
+    if op.status in (OperationStatus.Completed, OperationStatus.Cancelled):
+        raise HTTPException(status_code=400, detail="Operation is already completed/cancelled")
+
+    # TESTERE check (senin datanda opTypeId=33 gibi duruyor)
+    # İstersen daha sağlam: op.operation_type.code == "SAW" gibi yaparsın.
+    SAW_OPERATION_TYPE_ID = 33
+    if op.operation_type_id != SAW_OPERATION_TYPE_ID:
+        raise HTTPException(status_code=400, detail="This endpoint is only for SAW/TESTERE operations")
+
+    if payload.quantity_kg <= 0:
+        raise HTTPException(status_code=400, detail="quantity_kg must be > 0")
+
+    wo = op.work_order
+    if not wo or not wo.die_component:
+        raise HTTPException(status_code=400, detail="Work order / die component not found")
+
+    # Lot doğrula: aynı stock_item mı?
+    lot = db.query(Lot).get(payload.lot_id)
+    if not lot:
+        raise HTTPException(status_code=404, detail="Lot not found")
+
+    stock_item_id = wo.die_component.stock_item_id
+    if lot.stock_item_id != stock_item_id:
+        raise HTTPException(status_code=400, detail="Selected lot does not match required steel stock item")
+
+    if float(lot.remaining_kg) < float(payload.quantity_kg):
+        raise HTTPException(status_code=400, detail="Lot remaining_kg is not enough")
+
+    # Lot düş
+    lot.remaining_kg = float(lot.remaining_kg) - float(payload.quantity_kg)
+
+    # WorkOrder lot + actual
+    wo.lot_id = lot.id
+    if wo.actual_consumption_kg is None:
+        wo.actual_consumption_kg = float(payload.quantity_kg)
+    else:
+        wo.actual_consumption_kg = float(wo.actual_consumption_kg) + float(payload.quantity_kg)
+
+    # StockMovement yaz
+    mv = StockMovement(
+        lot_id=lot.id,
+        work_order_id=wo.id,
+        quantity_kg=float(payload.quantity_kg),
+        movement_date=datetime.now(timezone.utc),
+        notes=payload.note,
+    )
+    db.add(mv)
+
+    # Operation completed + timestamps
+    op.status = OperationStatus.Completed
+    op.completed_at = datetime.now(timezone.utc)
+
+    # WorkCenter available
+    wc = db.query(WorkCenter).get(op.work_center_id)
+    if wc:
+        wc.status = WorkCenterStatus.Available
+
+    db.commit()
+    db.refresh(op)
+
+    op = (
+        db.query(WorkOrderOperation)
+        .options(
+            joinedload(WorkOrderOperation.work_center),
+            joinedload(WorkOrderOperation.operation_type),
+            joinedload(WorkOrderOperation.work_order)
+                .joinedload(WorkOrder.die_component)
+                .joinedload(DieComponent.component_type),
+            joinedload(WorkOrderOperation.work_order)
+                .joinedload(WorkOrder.production_order)
+                .joinedload(ProductionOrder.die)
+                .joinedload(Die.die_type),
+            joinedload(WorkOrderOperation.work_order)
+                .joinedload(WorkOrder.production_order)
+                .joinedload(ProductionOrder.die)
+                .joinedload(Die.files),
+        )
+        .get(op.id)
+    )
+    return op
