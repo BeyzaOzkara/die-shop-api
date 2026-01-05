@@ -43,8 +43,8 @@ class FileRead(BaseModel):
 class DieNested(BaseModel):
     id: int
     die_number: str
-    die_diameter_mm: int
-    total_package_length_mm: int
+    die_diameter_mm: float
+    total_package_length_mm: float
     die_type_id: int
     
     files: List[FileRead] = []
