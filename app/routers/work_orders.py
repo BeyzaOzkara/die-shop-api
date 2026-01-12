@@ -971,11 +971,13 @@ def complete_saw_operation(operation_id: int, payload: CompleteSawRequest, db: S
         .options(
             joinedload(WorkOrderOperation.work_center),
             joinedload(WorkOrderOperation.work_order)
-                .joinedload(WorkOrder.die_component),
+                .joinedload(WorkOrder.die_component)
+                .joinedload(DieComponent.stock_item),   # ✅ EKLE
             joinedload(WorkOrderOperation.operation_type),
         )
         .get(operation_id)
     )
+
     if not op:
         raise HTTPException(status_code=404, detail="Work order operation not found")
 
@@ -1001,13 +1003,40 @@ def complete_saw_operation(operation_id: int, payload: CompleteSawRequest, db: S
         raise HTTPException(status_code=400, detail="Work order / die component not found")
 
     # Lot doğrula: aynı stock_item mı?
-    lot = db.query(Lot).get(payload.lot_id)
+    # lot = db.query(Lot).get(payload.lot_id)
+    lot = (
+        db.query(Lot)
+        .options(joinedload(Lot.stock_item))   # ✅ EKLE
+        .get(payload.lot_id)
+    )
+
     if not lot:
         raise HTTPException(status_code=404, detail="Lot not found")
 
-    stock_item_id = wo.die_component.stock_item_id
-    if lot.stock_item_id != stock_item_id:
-        raise HTTPException(status_code=400, detail="Selected lot does not match required steel stock item")
+    # stock_item_id = wo.die_component.stock_item_id
+    # if lot.stock_item_id != stock_item_id:
+    #     raise HTTPException(status_code=400, detail="Selected lot does not match required steel stock item")
+
+    component_stock = wo.die_component.stock_item
+    if not component_stock:
+        raise HTTPException(status_code=400, detail="Die component stock item not found")
+
+    # ✅ alloy + diameter kuralı
+    lot_stock = lot.stock_item
+    if not lot_stock:
+        raise HTTPException(status_code=400, detail="Lot stock item not found")
+
+    if lot_stock.alloy != component_stock.alloy:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Selected lot alloy mismatch (need {component_stock.alloy}, got {lot_stock.alloy})",
+        )
+
+    if int(lot_stock.diameter_mm) < int(component_stock.diameter_mm):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Selected lot diameter too small (need >= {component_stock.diameter_mm}, got {lot_stock.diameter_mm})",
+        )
 
     if float(lot.remaining_kg) < float(payload.quantity_kg):
         raise HTTPException(status_code=400, detail="Lot remaining_kg is not enough")
