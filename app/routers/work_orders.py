@@ -22,6 +22,7 @@ from ..models import (
     Operator,
     OperationType,
      StockMovement,
+     SteelStockItem,
 )
 from ..deps import require_admin
 
@@ -290,6 +291,11 @@ class LotForSawRead(BaseModel):
     gross_weight_kg: float
     remaining_kg: float
     received_date: datetime
+    
+    # ✅ yeni (opsiyonel ama öneririm)
+    stock_item_id: int
+    alloy: Optional[str] = None
+    diameter_mm: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -882,32 +888,67 @@ def list_available_lots_for_operation(operation_id: int, db: Session = Depends(g
         .options(
             joinedload(WorkOrderOperation.work_order)
                 .joinedload(WorkOrder.die_component)
+                .joinedload(DieComponent.stock_item)   # ✅ stock_item'ı da yükle
         )
         .get(operation_id)
     )
     if not op:
         raise HTTPException(status_code=404, detail="Work order operation not found")
 
-    if not op.work_order or not op.work_order.die_component:
-        raise HTTPException(status_code=400, detail="Operation has no work order / die component")
+    if not op.work_order or not op.work_order.die_component or not op.work_order.die_component.stock_item:
+        raise HTTPException(status_code=400, detail="Operation has no die component / stock item")
 
-    stock_item_id = op.work_order.die_component.stock_item_id
+    component_stock = op.work_order.die_component.stock_item
+    min_diameter = component_stock.diameter_mm
+    alloy = component_stock.alloy
+
+    # ✅ aynı alloy + çap >= seçilen çap olan tüm stock_item’ları bul
+    eligible_stock_item_ids = [
+        x.id
+        for x in (
+            db.query(SteelStockItem.id)
+            .filter(
+                SteelStockItem.alloy == alloy,
+                SteelStockItem.diameter_mm >= min_diameter,
+            )
+            .all()
+        )
+    ]
+
+    if not eligible_stock_item_ids:
+        return []
 
     lots = (
         db.query(Lot)
+        .options(joinedload(Lot.stock_item))  # ✅ alloy/diameter döndürmek için
         .filter(
-            Lot.stock_item_id == stock_item_id,
+            Lot.stock_item_id.in_(eligible_stock_item_ids),
             Lot.remaining_kg > 0
         )
-        .order_by(Lot.received_date.asc())
+        # ✅ önce daha küçük çaplar önce gelsin (seçilen çapa yakın), sonra eski lotlar
+        .order_by(
+            asc(Lot.stock_item_id),          # istersen bunu kaldır
+            asc(Lot.received_date)
+        )
         .all()
     )
-    return lots
 
-class CompleteSawRequest(BaseModel):
-    lot_id: int
-    quantity_kg: float
-    note: Optional[str] = None
+    # ✅ response’a alloy/diameter basmak için map’leyelim
+    out: List[LotForSawRead] = []
+    for lot in lots:
+        out.append(LotForSawRead(
+            id=lot.id,
+            certificate_number=lot.certificate_number,
+            supplier=lot.supplier,
+            length_mm=lot.length_mm,
+            gross_weight_kg=lot.gross_weight_kg,
+            remaining_kg=lot.remaining_kg,
+            received_date=lot.received_date,
+            stock_item_id=lot.stock_item_id,
+            alloy=getattr(lot.stock_item, "alloy", None),
+            diameter_mm=getattr(lot.stock_item, "diameter_mm", None),
+        ))
+    return out
 
 
 @ops_router.post("/{operation_id}/complete-saw", response_model=WorkOrderOperationRead)
