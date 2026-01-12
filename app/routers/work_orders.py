@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import exists, and_
 from pydantic import BaseModel, ConfigDict
 from datetime import datetime, timezone
+from sqlalchemy import asc
 
 from ..database import get_db
 from ..models import (
@@ -950,6 +951,10 @@ def list_available_lots_for_operation(operation_id: int, db: Session = Depends(g
         ))
     return out
 
+class CompleteSawRequest(BaseModel):
+    lot_id: int
+    quantity_kg: float
+    note: Optional[str] = None
 
 @ops_router.post("/{operation_id}/complete-saw", response_model=WorkOrderOperationRead)
 def complete_saw_operation(operation_id: int, payload: CompleteSawRequest, db: Session = Depends(get_db)):
