@@ -169,3 +169,93 @@ def delete_bom_operation(
 
     db.delete(bom)
     db.commit()
+
+
+@router.patch("/{id}", response_model=ComponentBOMRead)
+def update_bom_operation(
+    id: int,
+    payload: ComponentBOMUpdate,
+    db: Session = Depends(get_db),
+):
+    # bom = db.query(ComponentBOM).get(id)
+    bom = db.get(ComponentBOM, id)
+    if not bom:
+        raise HTTPException(status_code=404, detail="Component BOM not found")
+
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(bom, field, value)
+
+    db.commit()
+    db.refresh(bom)
+
+    bom = (
+        db.query(ComponentBOM)
+        .options(
+            joinedload(ComponentBOM.component_type),
+            joinedload(ComponentBOM.operation_type),
+            joinedload(ComponentBOM.preferred_work_center),
+        )
+        .get(bom.id)
+    )
+    return bom
+
+
+# =========================
+# Reorder Endpoint
+# =========================
+
+class ComponentBOMReorder(BaseModel):
+    bom_ids: List[int]
+
+@router.post("/reorder", status_code=204)
+def reorder_bom_operations(
+    payload: ComponentBOMReorder,
+    db: Session = Depends(get_db),
+):
+    """
+    Reorder BOM operations based on the provided list of IDs.
+    The order of IDs in the list determines the new sequence_number (1-based).
+    """
+    if not payload.bom_ids:
+        return
+
+    # Verify all BOMs exist (optional optimization: fetch all in one query)
+    # We'll just fetch all BOMs involved to minimize queries
+    boms = db.query(ComponentBOM).filter(ComponentBOM.id.in_(payload.bom_ids)).all()
+    bom_map = {b.id: b for b in boms}
+
+    missing_ids = [bid for bid in payload.bom_ids if bid not in bom_map]
+    if missing_ids:
+        raise HTTPException(status_code=400, detail=f"Invalid BOM IDs: {missing_ids}")
+
+    # Ensure they all belong to the same component_type_id (very important!)
+    component_type_ids = {bom_map[bid].component_type_id for bid in payload.bom_ids}
+    if len(component_type_ids) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="All bom_ids must belong to the same component_type_id",
+        )
+
+    # Two-phase update to avoid UNIQUE(component_type_id, sequence_number) conflicts
+    try:
+        # Phase 1: move to temporary sequence numbers (negative, unique)
+        # Example: -1, -2, -3 ... (won't conflict with existing positive sequence)
+        for idx, bom_id in enumerate(payload.bom_ids, start=1):
+            bom_map[bom_id].sequence_number = -idx
+
+        db.flush()  # push temp values so second phase won't collide
+
+        # Phase 2: apply final sequence numbers (1..N)
+        for idx, bom_id in enumerate(payload.bom_ids, start=1):
+            bom_map[bom_id].sequence_number = idx
+
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    # # Update sequence numbers
+    # for index, bom_id in enumerate(payload.bom_ids):
+    #     bom = bom_map[bom_id]
+    #     bom.sequence_number = index + 1
+    
+    # db.commit()

@@ -22,8 +22,8 @@ from ..models import (
     Die,
     Operator,
     OperationType,
-     StockMovement,
-     SteelStockItem,
+    StockMovement,
+    SteelStockItem,
 )
 from ..deps import require_admin
 
@@ -261,7 +261,7 @@ class WorkOrderOperationRead(BaseModel):
     sequence_number: int
     operation_type_id: int
     operation_name: Optional[str] = None
-    work_center_id: Optional[int] = None   # ✅ nullable
+    work_center_id: Optional[int] = None   # nullable
     operator_name: Optional[str] = None
     status: OperationStatus
     estimated_duration_minutes: Optional[int] = None
@@ -421,6 +421,7 @@ ops_router = APIRouter(prefix="/work-order-operations", tags=["Work Order Operat
 class StartOperationRequest(BaseModel):
     work_center_id: int
     operator_name: Optional[str] = None # name değil sicil no yapalım
+    notes: Optional[str] = None
 
 
 @ops_router.get("/by-work-order/{work_order_id}", response_model=List[WorkOrderOperationRead])
@@ -991,9 +992,11 @@ def complete_saw_operation(operation_id: int, payload: CompleteSawRequest, db: S
 
     # TESTERE check (senin datanda opTypeId=33 gibi duruyor)
     # İstersen daha sağlam: op.operation_type.code == "SAW" gibi yaparsın.
-    SAW_OPERATION_TYPE_ID = 33
-    if op.operation_type_id != SAW_OPERATION_TYPE_ID:
-        raise HTTPException(status_code=400, detail="This endpoint is only for SAW/TESTERE operations")
+    # SAW_OPERATION_TYPE_ID = 33
+    # if op.operation_type_id != SAW_OPERATION_TYPE_ID:
+    #     raise HTTPException(status_code=400, detail="This endpoint is only for SAW/TESTERE operations")
+    if op.operation_type.code not in ["T", "SAW", "TESTERE"]:
+        raise HTTPException(status_code=400, detail=f"This endpoint is only for SAW/TESTERE operations (got {op.operation_type.code})")
 
     if payload.quantity_kg <= 0:
         raise HTTPException(status_code=400, detail="quantity_kg must be > 0")

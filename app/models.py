@@ -17,6 +17,7 @@ from sqlalchemy import (
     func
 )
 from sqlalchemy.orm import relationship
+from sqlalchemy.dialects.postgresql import JSONB
 
 from .database import Base
 
@@ -34,12 +35,10 @@ class OrderStatus(str, enum.Enum):
     Completed = "Completed"
     Cancelled = "Cancelled"
 
-
 class WorkCenterStatus(str, enum.Enum):
     Available = "Available"
     Busy = "Busy"
     UnderMaintenance = "UnderMaintenance"
-
 
 class OperationStatus(str, enum.Enum):
     Waiting = "Waiting"
@@ -47,7 +46,6 @@ class OperationStatus(str, enum.Enum):
     Completed = "Completed"
     Paused = "Paused"
     Cancelled = "Cancelled"
-
 
 class DieStatus(str, enum.Enum):
     Draft = "Draft"
@@ -61,7 +59,11 @@ class OperatorRole(str, enum.Enum):
     QualityControl = "QualityControl" # operasyon sonunda ret veirse work order opersayon sırasını bozup başka yere gönderebilir
     Supervisor = "Supervisor"
     Manager = "Manager"
-
+    
+class ExecutionMode(str, enum.Enum):
+    """Whether operation type runs on single component or batch of components."""
+    Single = "Single"     # One component at a time
+    Batch = "Batch"       # Multiple components together
 
 # =========================
 # OPERATOR - WORK CENTER M2M
@@ -140,6 +142,11 @@ class OperationType(Base):
     name = Column(String, nullable=False)               # "Taşlama"
     description = Column(Text)
     is_active = Column(Boolean, nullable=False, default=True)
+    execution_mode = Column(
+        SAEnum(ExecutionMode, name="execution_mode", native_enum=True),
+        nullable=False,
+        default=ExecutionMode.Single,
+    )  # NEW
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
     work_centers = relationship(
@@ -390,6 +397,7 @@ class WorkOrderOperation(Base):
     completed_at = Column(DateTime(timezone=True))
     notes = Column(Text)
     created_at = Column(DateTime(timezone=True), default=utc_now)
+    meta_data = Column(JSONB, nullable=True)  # NEW
 
     work_order = relationship("WorkOrder", back_populates="operations")
     work_center = relationship("WorkCenter", back_populates="work_order_operations")
@@ -448,3 +456,25 @@ class Operator(Base):
         secondary=operator_work_center,
         back_populates="operators",
     )
+
+
+# =========================
+# DOMAIN ACTION LOGGING
+# =========================
+
+class DomainActionLog(Base):
+    """Audit trail for business events (not error logging)."""
+    __tablename__ = "domain_action_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    action_type = Column(String, nullable=False, index=True)  # e.g. "OPERATION_START"
+    actor_type = Column(String, nullable=False)               # "user", "operator", "system"
+    actor_id = Column(Integer, nullable=True)                 # FK optional for system actions
+    entity_type = Column(String, nullable=False, index=True)  # entity table name
+    entity_id = Column(Integer, nullable=False)
+    reason = Column(String, nullable=True)                    # reason code for stops
+    notes = Column(Text, nullable=True)
+    before_snapshot = Column(JSONB, nullable=True)             # JSONB
+    after_snapshot = Column(JSONB, nullable=True)              # JSONB 
+    meta_data = Column(JSONB, nullable=True)                   # JSONB for extra data
+    created_at = Column(DateTime(timezone=True), default=utc_now)

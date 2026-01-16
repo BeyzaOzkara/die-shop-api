@@ -117,6 +117,17 @@ class DieUpdate(BaseModel): # dosya güncelleme eklenecek
     die_type_id: Optional[int] = None
     # diğer alanları da ileride istersen ekleyebiliriz.
 
+# ---- DieComponent ----
+
+class DieComponentRead(DieComponentBase):
+    id: int
+    die_id: int
+    created_at: datetime
+    component_type: Optional[ComponentTypeNested] = None
+    stock_item: Optional[StockItemNested] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
 
 class DieRead(DieBase):
     id: int
@@ -132,21 +143,11 @@ class DieRead(DieBase):
     die_type_ref: Optional[DieTypeRef] = None
 
     files: List["FileRead"] = []
+    components: List["DieComponentRead"] = []
 
     model_config = ConfigDict(from_attributes=True)
 DieRead.model_rebuild()
 
-
-# ---- DieComponent ----
-
-class DieComponentRead(DieComponentBase):
-    id: int
-    die_id: int
-    created_at: datetime
-    component_type: Optional[ComponentTypeNested] = None
-    stock_item: Optional[StockItemNested] = None
-
-    model_config = ConfigDict(from_attributes=True)
 
 # =========================
 # Die endpoints
@@ -156,11 +157,16 @@ class DieComponentRead(DieComponentBase):
 def list_dies(db: Session = Depends(get_db)):
     dies = (
         db.query(Die)
-        .options(joinedload(Die.die_type), joinedload(Die.files))
+        # .options(joinedload(Die.die_type), joinedload(Die.files))
+        .options(
+            joinedload(Die.die_type),
+            joinedload(Die.files),
+            joinedload(Die.components).joinedload(DieComponent.component_type),
+            joinedload(Die.components).joinedload(DieComponent.stock_item),
+        )
         .order_by(Die.created_at.desc())
         .all()
     )
-    # return dies
     result: List[DieRead] = []
     for die in dies:
         die_dict = DieRead.model_validate(die).model_dump()
@@ -176,7 +182,13 @@ def list_dies(db: Session = Depends(get_db)):
 def get_die(die_id: int, db: Session = Depends(get_db)):
     die = (
         db.query(Die)
-        .options(joinedload(Die.die_type), joinedload(Die.files))
+        # .options(joinedload(Die.die_type), joinedload(Die.files))
+        .options(
+            joinedload(Die.die_type),
+            joinedload(Die.files),
+            joinedload(Die.components).joinedload(DieComponent.component_type),
+            joinedload(Die.components).joinedload(DieComponent.stock_item),
+        )
         .filter(Die.id == die_id)
         .first()
     )
