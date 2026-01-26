@@ -296,6 +296,10 @@ class Die(Base):
     customer_name = Column(String, nullable=False)
     press_code = Column(String, nullable=False)
 
+    is_revisioned = Column(Boolean, nullable=False, default=False)
+    # revision_code = Column(String, nullable=True)   # örn: "R1", "Rev-2"
+    # revision_note = Column(String, nullable=True)   # opsiyonel açıklama
+
     die_type = relationship("DieType", back_populates="dies", lazy="selectin")
     components = relationship("DieComponent", back_populates="die")
     production_orders = relationship("ProductionOrder", back_populates="die")

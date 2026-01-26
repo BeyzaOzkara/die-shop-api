@@ -78,6 +78,8 @@ class DieBase(BaseModel):
     figure_count: Optional[int] = None
     customer_name: Optional[str] = None
     press_code: Optional[str] = None
+    
+    is_revisioned: bool = False
 
 
 class DieComponentBase(BaseModel):
@@ -102,6 +104,8 @@ class DieCreateIn(BaseModel):
     customer_name: Optional[str] = None
     press_code: Optional[str] = None
     # ... profile_no, figure_count, customer_name, press_code, is_fason
+
+    is_revisioned: bool = False
 
     components: List[DieComponentCreate] = []
 
@@ -202,61 +206,6 @@ def get_die(die_id: int, db: Session = Depends(get_db)):
         die_dict["die_type_ref"] = None
     return DieRead.model_validate(die_dict)
 
-
-# @router.post("/", response_model=DieRead, status_code=201)
-# @router.post("/", response_model=DieRead, status_code=201, dependencies=[Depends(require_admin)])
-# def create_die(
-#     payload: str = Form(...),
-#     design_files: List[UploadFile] = UploadFileField([]),
-#     db: Session = Depends(get_db),
-# ):
-#     # 1) payload json parse + validate
-#     try:
-#         data = json.loads(payload)
-#         p = DieCreateIn.model_validate(data)
-#     except Exception as e:
-#         raise HTTPException(status_code=400, detail=f"Invalid payload: {e}")
-
-#     # 2) uniq kontrol
-#     existing = db.query(Die).filter(Die.die_number == p.die_number).first()
-#     if existing:
-#         raise HTTPException(status_code=400, detail="Die number already exists")
-
-#     # 3) die oluştur
-#     die = Die(
-#         die_number=p.die_number,
-#         die_diameter_mm=p.die_diameter_mm,
-#         total_package_length_mm=p.total_package_length_mm,
-#         die_type_id=p.die_type_id,
-#         status=DieStatus.Draft,
-
-#         profile_no=p.profile_no,
-#         figure_count=p.figure_count,
-#         customer_name=p.customer_name,
-#         press_code=p.press_code,
-#     )
-#     db.add(die)
-#     db.flush()  # die.id lazım
-
-#     # 4) dosyalar varsa kaydet + File kayıtları bas
-#     first_url: Optional[str] = None
-#     for f in design_files or []:
-#         save_uploaded_file(
-#             db=db,
-#             upload=f,
-#             entity_type="die",
-#             entity_id=die.id,
-#         )
-
-#     db.commit()
-
-#     die = (
-#         db.query(Die)
-#         .options(joinedload(Die.die_type), joinedload(Die.files))
-#         .get(die.id)
-#     )
-#     return die
-
 @router.post("/", response_model=DieRead, status_code=201, dependencies=[Depends(require_admin)])
 def create_die(
     payload: str = Form(...),
@@ -341,6 +290,7 @@ def create_die(
             figure_count=p.figure_count,
             customer_name=p.customer_name,
             press_code=p.press_code,
+            is_revisioned=p.is_revisioned,
         )
         db.add(die)
         db.flush()  # die.id lazım
