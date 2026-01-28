@@ -91,6 +91,61 @@ class ProductionOrderRead(ProductionOrderBase):
 
 
 # =========================
+# Preview Schemas
+# =========================
+
+class ComponentTypeNested(BaseModel):
+    id: int
+    code: str
+    name: str
+    
+    model_config = ConfigDict(from_attributes=True)
+
+
+class OperationTypeNested(BaseModel):
+    id: int
+    code: str
+    name: str
+    
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BOMOperationPreview(BaseModel):
+    """Single BOM operation for preview."""
+    bom_id: int
+    sequence_number: int
+    operation_name: str
+    operation_type: OperationTypeNested
+    estimated_duration_minutes: Optional[int] = None
+    notes: Optional[str] = None
+
+
+class ComponentPreview(BaseModel):
+    """Preview of a component and its BOM operations."""
+    component_id: int
+    component_type: ComponentTypeNested
+    package_length_mm: float
+    theoretical_consumption_kg: float
+    bom_operations: List[BOMOperationPreview] = []
+
+
+class WorkOrderPreviewResponse(BaseModel):
+    """Full preview of work orders that would be generated."""
+    production_order_id: int
+    die_number: str
+    components: List[ComponentPreview] = []
+    total_components: int
+    total_operations: int
+
+
+class GenerateWorkOrdersRequest(BaseModel):
+    """Optional request body for selective work order generation."""
+    selected_operations: Optional[dict[int, List[int]]] = None
+    # Key: die_component_id, Value: list of ComponentBOM.id to include
+    # If None, include all operations (current behavior)
+
+
+# =========================
 # Endpoint'ler
 # =========================
 
@@ -153,12 +208,98 @@ def create_production_order(
     return po
 
 
+@router.post("/{id}/preview-work-orders", response_model=WorkOrderPreviewResponse, dependencies=[Depends(require_admin)])
+def preview_work_orders(
+    id: int,
+    db: Session = Depends(get_db),
+):
+    """
+    Preview the work orders and operations that would be generated.
+    Returns all BOM operations grouped by component - no database changes.
+    """
+    po = (
+        db.query(ProductionOrder)
+        .options(
+            joinedload(ProductionOrder.die)
+                .joinedload(Die.components)
+                .joinedload(DieComponent.component_type),
+        )
+        .get(id)
+    )
+    if not po:
+        raise HTTPException(status_code=404, detail="Production order not found")
+
+    die = po.die
+    if not die:
+        raise HTTPException(status_code=400, detail="Related die not found")
+
+    if not die.components:
+        raise HTTPException(status_code=400, detail="Die has no components")
+
+    components_preview = []
+    total_operations = 0
+
+    for component in sorted(die.components, key=lambda c: c.id):
+        # Get BOM operations for this component type
+        boms = (
+            db.query(ComponentBOM)
+            .options(joinedload(ComponentBOM.operation_type))
+            .filter(ComponentBOM.component_type_id == component.component_type_id)
+            .order_by(ComponentBOM.sequence_number.asc())
+            .all()
+        )
+
+        bom_operations = []
+        for bom in boms:
+            bom_operations.append(BOMOperationPreview(
+                bom_id=bom.id,
+                sequence_number=bom.sequence_number,
+                operation_name=bom.operation_name,
+                operation_type=OperationTypeNested(
+                    id=bom.operation_type.id,
+                    code=bom.operation_type.code,
+                    name=bom.operation_type.name,
+                ),
+                estimated_duration_minutes=bom.estimated_duration_minutes,
+                notes=bom.notes,
+            ))
+            total_operations += 1
+
+        components_preview.append(ComponentPreview(
+            component_id=component.id,
+            component_type=ComponentTypeNested(
+                id=component.component_type.id,
+                code=component.component_type.code,
+                name=component.component_type.name,
+            ),
+            package_length_mm=float(component.package_length_mm),
+            theoretical_consumption_kg=float(component.theoretical_consumption_kg),
+            bom_operations=bom_operations,
+        ))
+
+    return WorkOrderPreviewResponse(
+        production_order_id=po.id,
+        die_number=die.die_number,
+        components=components_preview,
+        total_components=len(components_preview),
+        total_operations=total_operations,
+    )
+
+
 # @router.post("/{id}/generate-work-orders", response_model=ProductionOrderRead, status_code=201)
 @router.post("/{id}/generate-work-orders", response_model=ProductionOrderRead, status_code=201, dependencies=[Depends(require_admin)])
 def generate_work_orders_for_production_order(
     id: int,
+    payload: Optional[GenerateWorkOrdersRequest] = None,
     db: Session = Depends(get_db),
 ):
+    """
+    Generate work orders for a production order.
+    
+    If payload.selected_operations is provided, only creates operations for selected BOMs.
+    Format: { component_id: [bom_id, bom_id, ...], ... }
+    If None or empty, creates all operations (original behavior).
+    """
     # 1) Üretim emrini ve ilişkili kalıbı + bileşenleri çek
     po = (
         db.query(ProductionOrder)
@@ -181,6 +322,11 @@ def generate_work_orders_for_production_order(
     existing_wo = db.query(WorkOrder).filter(WorkOrder.production_order_id == po.id).first()
     if existing_wo:
         raise HTTPException(status_code=400, detail="Work orders already generated for this production order")
+
+    # Parse selected operations
+    selected_ops = None
+    if payload and payload.selected_operations:
+        selected_ops = payload.selected_operations
 
     # 2) Her bileşen için iş emri + operasyonları oluştur
     index = 1
@@ -206,6 +352,13 @@ def generate_work_orders_for_production_order(
             .order_by(ComponentBOM.sequence_number.asc())
             .all()
         )
+
+        # Filter BOMs if selected_ops provided
+        if selected_ops is not None:
+            component_selected = selected_ops.get(component.id, [])
+            if component_selected:  # If list is provided, filter
+                boms = [b for b in boms if b.id in component_selected]
+            # If component not in selected_ops or empty list, include all BOMs for that component
 
         for bom in boms:
             op = WorkOrderOperation(
@@ -238,6 +391,7 @@ def generate_work_orders_for_production_order(
         .get(po.id)
     )
     return po
+
 
 # @router.patch("/{id}", response_model=ProductionOrderRead)
 @router.patch("/{id}", response_model=ProductionOrderRead, dependencies=[Depends(require_admin)])

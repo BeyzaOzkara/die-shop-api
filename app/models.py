@@ -133,7 +133,6 @@ class DieType(Base):
     die_type_components = relationship("DieTypeComponent", back_populates="die_type")
     dies = relationship("Die", back_populates="die_type")
 
-
 class OperationType(Base):
     __tablename__ = "operation_type"
 
@@ -154,7 +153,6 @@ class OperationType(Base):
         secondary=work_center_operation_type,
         back_populates="operation_types",
     )
-
 
 class WorkCenter(Base):
     __tablename__ = "work_center"
@@ -187,7 +185,6 @@ class WorkCenter(Base):
         back_populates="work_centers",
     )
 
-
 class ComponentType(Base):
     __tablename__ = "component_type"
 
@@ -203,7 +200,6 @@ class ComponentType(Base):
     component_boms = relationship("ComponentBOM", back_populates="component_type")
     die_components = relationship("DieComponent", back_populates="component_type")
 
-
 class DieTypeComponent(Base):
     __tablename__ = "die_type_component"
 
@@ -214,7 +210,6 @@ class DieTypeComponent(Base):
 
     die_type = relationship("DieType", back_populates="die_type_components")
     component_type = relationship("ComponentType", back_populates="die_type_components")
-
 
 class ComponentBOM(Base):
     __tablename__ = "component_bom"
@@ -312,7 +307,6 @@ class Die(Base):
 def die_type_ref(self):
     return self.die_type
 
-
 class DieComponent(Base):
     __tablename__ = "die_component"
 
@@ -347,7 +341,6 @@ class ProductionOrder(Base):
 
     die = relationship("Die", back_populates="production_orders")
     work_orders = relationship("WorkOrder", back_populates="production_order")
-
 
 class WorkOrder(Base):
     __tablename__ = "work_order"

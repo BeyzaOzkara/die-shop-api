@@ -21,7 +21,6 @@ from ..models import (
     ProductionOrder,
     Die,
     Operator,
-    OperationType,
     StockMovement,
     SteelStockItem,
 )
@@ -417,6 +416,7 @@ def update_work_order(id: int, payload: WorkOrderUpdate, db: Session = Depends(g
 
 # Aynı app içinde ama farklı prefix kullanmak için ikinci router'ı da buradan expose edeceğiz.
 ops_router = APIRouter(prefix="/work-order-operations", tags=["Work Order Operations"])
+
 
 class StartOperationRequest(BaseModel):
     work_center_id: int
