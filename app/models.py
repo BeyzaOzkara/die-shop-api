@@ -14,9 +14,10 @@ from sqlalchemy import (
     ForeignKey,
     Table,
     BigInteger,
-    func
+    func,
+    and_,
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, foreign
 from sqlalchemy.dialects.postgresql import JSONB
 
 from .database import Base
@@ -267,6 +268,17 @@ class Lot(Base):
     work_orders = relationship("WorkOrder", back_populates="lot")
     stock_movements = relationship("StockMovement", back_populates="lot")
 
+# ✅ LOT FILES (die'dekiyle aynı mantık)
+    files = relationship(
+        "File",
+        primaryjoin=and_(
+            File.entity_type == "lot",
+            foreign(File.entity_id) == id,
+        ),
+        viewonly=True,
+        lazy="selectin",
+        order_by="File.created_at.asc()",
+    )
 
 # =========================
 # DIE & COMPONENTS
@@ -298,14 +310,24 @@ class Die(Base):
     die_type = relationship("DieType", back_populates="dies", lazy="selectin")
     components = relationship("DieComponent", back_populates="die")
     production_orders = relationship("ProductionOrder", back_populates="die")
-    files = relationship("File",
-        primaryjoin="and_(File.entity_type=='die', foreign(File.entity_id)==Die.id)",
-        viewonly=True, lazy="selectin", order_by="File.created_at.asc()"
+    # files = relationship("File",
+    #     primaryjoin="and_(File.entity_type=='die', foreign(File.entity_id)==Die.id)",
+    #     viewonly=True, lazy="selectin", order_by="File.created_at.asc()"
+    # )
+    files = relationship(
+        "File",
+        primaryjoin=and_(
+            File.entity_type == "die",
+            foreign(File.entity_id) == id,
+        ),
+        viewonly=True,
+        lazy="selectin",
+        order_by="File.created_at.asc()",
     )
 
-@property
-def die_type_ref(self):
-    return self.die_type
+    @property
+    def die_type_ref(self):
+        return self.die_type
 
 class DieComponent(Base):
     __tablename__ = "die_component"

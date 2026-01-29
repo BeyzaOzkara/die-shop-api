@@ -1,11 +1,14 @@
 # backend/routers/inventory.py
 from typing import List, Optional
+import json
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as UploadFileField, Form
 from sqlalchemy.orm import Session, joinedload
 from pydantic import BaseModel, ConfigDict
 from datetime import datetime
 
+from ..config import settings
+from ..services.file_storage import save_uploaded_file
 from ..database import get_db
 from ..models import (
     WorkCenter,
@@ -77,6 +80,15 @@ class SteelStockItemRead(SteelStockItemBase):
 
     model_config = ConfigDict(from_attributes=True)
 
+class FileRead(BaseModel):
+    id: int
+    original_name: str
+    storage_path: str
+    mime_type: str
+    size_bytes: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
 
 class LotBase(BaseModel):
     stock_item_id: int
@@ -106,9 +118,11 @@ class LotRead(LotBase):
     id: int
     created_at: datetime
     stock_item: Optional[StockItemNested] = None
+    files: List[FileRead] = []   # YENİ
 
     model_config = ConfigDict(from_attributes=True)
 
+LotRead.model_rebuild()
 
 class LotRemainingRead(BaseModel):
     id: int
@@ -246,7 +260,7 @@ def create_steel_stock_item(payload: SteelStockItemCreate, db: Session = Depends
 
 @router.get("/lots", response_model=List[LotRead])
 def list_lots(include_stock_item: bool = True, db: Session = Depends(get_db)):
-    query = db.query(Lot)
+    query = db.query(Lot).options(joinedload(Lot.files))
     if include_stock_item:
         query = query.options(joinedload(Lot.stock_item))
     lots = query.order_by(Lot.received_date.desc()).all()
@@ -260,7 +274,7 @@ def list_lots_by_stock_item(
 ):
     query = (
         db.query(Lot)
-        .options(joinedload(Lot.stock_item))
+        .options(joinedload(Lot.stock_item), joinedload(Lot.files))
         .filter(Lot.stock_item_id == stock_item_id)
     )
     if only_with_remaining:
@@ -270,14 +284,75 @@ def list_lots_by_stock_item(
 
 # @router.post("/lots", response_model=LotRead, status_code=201)
 @router.post("/lots", response_model=LotRead, status_code=201, dependencies=[Depends(require_admin)])
-def create_lot(payload: LotCreate, db: Session = Depends(get_db)):
-    lot = Lot(**payload.model_dump())
-    db.add(lot)
-    db.commit()
-    db.refresh(lot)
-    # eager load stock_item
-    db.refresh(lot, attribute_names=["stock_item"])
+def create_lot(
+    payload: str = Form(...),
+    certificate_files: List[UploadFile] = UploadFileField([]),
+    db: Session = Depends(get_db),
+):
+    # 1) payload json parse + validate
+    try:
+        data = json.loads(payload)
+        p = LotCreate.model_validate(data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid payload: {e}")
+
+    # 2) referans kontrol
+    stock_item = db.query(SteelStockItem).get(p.stock_item_id)
+    if not stock_item:
+        raise HTTPException(status_code=400, detail="Invalid stock_item_id")
+
+    # 3) atomik transaction
+    try:
+        lot = Lot(**p.model_dump())
+        db.add(lot)
+        db.flush()  # lot.id lazım
+
+        # 3.1) dosyalar
+        first_saved_path: Optional[str] = None
+        for f in certificate_files or []:
+            saved = save_uploaded_file(
+                db=db,
+                upload=f,
+                entity_type="lot",
+                entity_id=lot.id,
+            )
+            # save_uploaded_file dönüş tipi projene göre değişebilir.
+            # Eğer dönüşte objede storage_path varsa ilkini url alanına yazalım (opsiyonel).
+            if first_saved_path is None:
+                # saved None olabilir -> guard
+                sp = getattr(saved, "storage_path", None)
+                if sp:
+                    first_saved_path = sp
+
+        # 3.2) geri uyumluluk: certificate_file_url alanını doldurmak istersen (opsiyonel)
+        if first_saved_path and not lot.certificate_file_url:
+            base = getattr(settings, "MEDIA_URL", "/api/media")
+            lot.certificate_file_url = f"{base}/{first_saved_path}".replace("//", "/")
+
+        db.commit()
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Create lot failed: {e}")
+
+    # 4) response: eager load stock_item + files
+    lot = (
+        db.query(Lot)
+        .options(joinedload(Lot.stock_item), joinedload(Lot.files))
+        .get(lot.id)
+    )
     return lot
+# def create_lot(payload: LotCreate, db: Session = Depends(get_db)):
+#     lot = Lot(**payload.model_dump())
+#     db.add(lot)
+#     db.commit()
+#     db.refresh(lot)
+#     # eager load stock_item
+#     db.refresh(lot, attribute_names=["stock_item"])
+#     return lot
 
 @router.get("/lots/{lot_id}/remaining", response_model=LotRemainingRead)
 def get_lot_remaining(lot_id: int, db: Session = Depends(get_db)):
@@ -289,7 +364,7 @@ def get_lot_remaining(lot_id: int, db: Session = Depends(get_db)):
 # @router.patch("/lots/{lot_id}/remaining", response_model=LotRead)
 @router.patch("/lots/{lot_id}/remaining", response_model=LotRead, dependencies=[Depends(require_admin)])
 def update_lot_remaining(lot_id: int, payload: LotUpdateRemaining, db: Session = Depends(get_db)):
-    lot = db.query(Lot).options(joinedload(Lot.stock_item)).get(lot_id)
+    lot = db.query(Lot).options(joinedload(Lot.stock_item), joinedload(Lot.files)).get(lot_id)
     if not lot:
         raise HTTPException(status_code=404, detail="Lot not found")
     lot.remaining_kg = payload.remaining_kg
