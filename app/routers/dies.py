@@ -436,3 +436,84 @@ def create_die_component(
         .get(comp.id)
     )
     return comp
+
+@router.post("/{die_id}/files", response_model=DieRead, status_code=201, dependencies=[Depends(require_admin)])
+def add_die_files(
+    die_id: int,
+    files: List[UploadFile] = UploadFileField(...),  # form field name: "files"
+    db: Session = Depends(get_db),
+):
+    die = db.query(Die).get(die_id)
+    if not die:
+        raise HTTPException(status_code=404, detail="Die not found")
+
+    if not files or len(files) == 0:
+        raise HTTPException(status_code=400, detail="No files provided")
+
+    try:
+        # Dosyaları kaydet
+        for f in files:
+            save_uploaded_file(
+                db=db,
+                upload=f,
+                entity_type="die",
+                entity_id=die.id,
+            )
+
+        db.commit()
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+
+    # Taze haliyle dön (die_type_ref + files + components)
+    die = (
+        db.query(Die)
+        .options(
+            joinedload(Die.die_type),
+            joinedload(Die.files),
+            joinedload(Die.components).joinedload(DieComponent.component_type),
+            joinedload(Die.components).joinedload(DieComponent.stock_item),
+        )
+        .get(die_id)
+    )
+
+    die_dict = DieRead.model_validate(die).model_dump()
+    die_dict["die_type_ref"] = DieTypeRef.model_validate(die.die_type) if die.die_type else None
+    return DieRead.model_validate(die_dict)
+
+@router.delete("/{die_id}/files/{file_id}", status_code=204, dependencies=[Depends(require_admin)])
+def delete_die_file(
+    die_id: int,
+    file_id: int,
+    db: Session = Depends(get_db),
+):
+    die = db.query(Die).get(die_id)
+    if not die:
+        raise HTTPException(status_code=404, detail="Die not found")
+
+    # Burada Die.files ilişkisi üzerinden bulmaya çalışıyoruz.
+    # Model isimleri sende "File" veya "StoredFile" olabilir.
+    # Die.files relationship'inin target modelini import etmene gerek kalmadan query yazabiliriz:
+    file_obj = None
+    for f in die.files or []:
+        if f.id == file_id:
+            file_obj = f
+            break
+
+    if not file_obj:
+        raise HTTPException(status_code=404, detail="File not found for this die")
+
+    try:
+        # Eğer file_storage servisinde delete helper varsa onu kullan (tercih)
+        # yoksa db.delete(file_obj) yeterli (diskten silme işi servis içinde olabilir)
+        db.delete(file_obj)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Delete failed: {e}")
+
+    return
