@@ -93,6 +93,20 @@ class DieComponentCreate(DieComponentBase):
     pass
 
 
+class DieComponentUpdate(BaseModel):
+    """Schema for updating a die component. Includes optional id for existing components."""
+    id: Optional[int] = None  # if provided, this is an existing component to update
+    component_type_id: int
+    stock_item_id: int
+    package_length_mm: float
+    theoretical_consumption_kg: float
+
+
+class DieComponentsReplace(BaseModel):
+    """Schema for batch replacing all components of a die."""
+    components: List[DieComponentUpdate]
+
+
 class DieCreateIn(BaseModel):
     die_number: str
     die_diameter_mm: float
@@ -116,10 +130,17 @@ class DieCreate(DieBase):
     pass
 
 
-class DieUpdate(BaseModel): # dosya güncelleme eklenecek
+class DieUpdate(BaseModel):
+    """Schema for updating die fields. die_number is immutable and cannot be updated."""
     status: Optional[DieStatus] = None
     die_type_id: Optional[int] = None
-    # diğer alanları da ileride istersen ekleyebiliriz.
+    die_diameter_mm: Optional[float] = None
+    total_package_length_mm: Optional[float] = None
+    profile_no: Optional[str] = None
+    figure_count: Optional[int] = None
+    customer_name: Optional[str] = None
+    press_code: Optional[str] = None
+    is_revisioned: Optional[bool] = None
 
 # ---- DieComponent ----
 
@@ -336,7 +357,6 @@ def create_die(
     return DieRead.model_validate(die_dict)
 
 
-# @router.patch("/{die_id}", response_model=DieRead)
 @router.patch("/{die_id}", response_model=DieRead, dependencies=[Depends(require_admin)])
 def update_die(
     die_id: int,
@@ -349,21 +369,26 @@ def update_die(
 
     data = payload.model_dump(exclude_unset=True)
 
-    # status enum/string normalize
-    if "status" in data and data["status"] is not None:
-        new_status = data["status"]
-        if isinstance(new_status, str):
-            new_status = DieStatus(new_status)
-        die.status = new_status
-
-    if "die_type_id" in data and data["die_type_id"] is not None:
-        die.die_type_id = data["die_type_id"]
+    # Update all provided fields
+    for field, value in data.items():
+        if field == "status" and value is not None:
+            # status enum/string normalize
+            if isinstance(value, str):
+                value = DieStatus(value)
+        if hasattr(die, field):
+            setattr(die, field, value)
 
     db.commit()
 
+    # Refresh and return with relations
     die = (
         db.query(Die)
-        .options(joinedload(Die.die_type), joinedload(Die.files))
+        .options(
+            joinedload(Die.die_type),
+            joinedload(Die.files),
+            joinedload(Die.components).joinedload(DieComponent.component_type),
+            joinedload(Die.components).joinedload(DieComponent.stock_item),
+        )
         .get(die_id)
     )
 
@@ -436,6 +461,113 @@ def create_die_component(
         .get(comp.id)
     )
     return comp
+
+
+@router.put("/{die_id}/components", response_model=List[DieComponentRead], dependencies=[Depends(require_admin)])
+def replace_die_components(
+    die_id: int,
+    payload: DieComponentsReplace,
+    db: Session = Depends(get_db),
+):
+    """
+    Batch replace all components for a die.
+    - Deletes components not in the new list
+    - Updates existing components (matched by component_type_id)
+    - Creates new components
+    """
+    # Verify die exists
+    die = db.query(Die).get(die_id)
+    if not die:
+        raise HTTPException(status_code=404, detail="Die not found")
+
+    # Validate no duplicate component_type_ids in payload
+    component_type_ids = [c.component_type_id for c in payload.components]
+    if len(component_type_ids) != len(set(component_type_ids)):
+        raise HTTPException(status_code=400, detail="Duplicate component_type_id in payload")
+
+    # Validate all component_type_ids and stock_item_ids exist
+    if component_type_ids:
+        existing_component_types = set(
+            r[0] for r in db.query(ComponentType.id)
+            .filter(ComponentType.id.in_(component_type_ids))
+            .all()
+        )
+        missing_ct = [cid for cid in component_type_ids if cid not in existing_component_types]
+        if missing_ct:
+            raise HTTPException(status_code=400, detail=f"Invalid component_type_id(s): {missing_ct}")
+
+    stock_item_ids = [c.stock_item_id for c in payload.components]
+    if stock_item_ids:
+        existing_stock_items = set(
+            r[0] for r in db.query(SteelStockItem.id)
+            .filter(SteelStockItem.id.in_(stock_item_ids))
+            .all()
+        )
+        missing_si = [sid for sid in stock_item_ids if sid not in existing_stock_items]
+        if missing_si:
+            raise HTTPException(status_code=400, detail=f"Invalid stock_item_id(s): {missing_si}")
+
+    # Validate numeric values
+    for c in payload.components:
+        if c.package_length_mm <= 0:
+            raise HTTPException(status_code=400, detail="package_length_mm must be > 0")
+        if c.theoretical_consumption_kg <= 0:
+            raise HTTPException(status_code=400, detail="theoretical_consumption_kg must be > 0")
+
+    try:
+        # Get existing components
+        existing_components = db.query(DieComponent).filter(DieComponent.die_id == die_id).all()
+        existing_by_type = {c.component_type_id: c for c in existing_components}
+        
+        # Track which component_type_ids are in the new payload
+        new_component_type_ids = set(component_type_ids)
+        
+        # Delete components not in new list
+        for comp in existing_components:
+            if comp.component_type_id not in new_component_type_ids:
+                db.delete(comp)
+        
+        # Update or create components
+        for comp_data in payload.components:
+            if comp_data.component_type_id in existing_by_type:
+                # Update existing
+                existing_comp = existing_by_type[comp_data.component_type_id]
+                existing_comp.stock_item_id = comp_data.stock_item_id
+                existing_comp.package_length_mm = comp_data.package_length_mm
+                existing_comp.theoretical_consumption_kg = comp_data.theoretical_consumption_kg
+            else:
+                # Create new
+                new_comp = DieComponent(
+                    die_id=die_id,
+                    component_type_id=comp_data.component_type_id,
+                    stock_item_id=comp_data.stock_item_id,
+                    package_length_mm=comp_data.package_length_mm,
+                    theoretical_consumption_kg=comp_data.theoretical_consumption_kg,
+                )
+                db.add(new_comp)
+        
+        db.commit()
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Component replacement failed: {e}")
+
+    # Return updated components with relations
+    components = (
+        db.query(DieComponent)
+        .options(
+            joinedload(DieComponent.component_type),
+            joinedload(DieComponent.stock_item),
+        )
+        .filter(DieComponent.die_id == die_id)
+        .order_by(DieComponent.created_at.asc())
+        .all()
+    )
+    return components
+
 
 @router.post("/{die_id}/files", response_model=DieRead, status_code=201, dependencies=[Depends(require_admin)])
 def add_die_files(
