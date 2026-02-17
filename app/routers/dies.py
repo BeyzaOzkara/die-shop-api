@@ -15,6 +15,8 @@ from ..models import (
     DieComponent,
     ComponentType,
     SteelStockItem,
+    ProductionOrder,
+    OrderStatus,
 )
 from ..deps import require_admin
 
@@ -649,3 +651,79 @@ def delete_die_file(
         raise HTTPException(status_code=500, detail=f"Delete failed: {e}")
 
     return
+
+
+@router.delete("/{die_id}", status_code=204, dependencies=[Depends(require_admin)])
+def delete_die(
+    die_id: int,
+    db: Session = Depends(get_db),
+):
+    """
+    Hard delete a die and all its dependencies.
+    
+    Business Rule: Can only delete if ALL production orders are in 'Waiting' status.
+    Delete order: production_orders → die_files → die_components → die
+    """
+    try:
+        # Lock the die row (FOR UPDATE to prevent race conditions)
+        die = db.query(Die).filter(Die.id == die_id).with_for_update().first()
+        
+        if not die:
+            raise HTTPException(status_code=404, detail="Die not found")
+        
+        # Lock and check production orders
+        production_orders = (
+            db.query(ProductionOrder)
+            .filter(ProductionOrder.die_id == die_id)
+            .with_for_update()
+            .all()
+        )
+        
+        # Check if any production order is NOT in 'Waiting' status
+        for po in production_orders:
+            if po.status != OrderStatus.Waiting:
+                db.rollback()
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": {
+                            "code": "APPROVED_PO_EXISTS",
+                            "message": "Cannot delete die: approved production orders exist"
+                        }
+                    }
+                )
+        
+        # Delete in order: production orders → files → components → die
+        
+        # 1. Delete production orders (and cascade to work orders if configured)
+        for po in production_orders:
+            db.delete(po)
+        
+        # 2. Delete die files
+        from ..models import File
+        files = db.query(File).filter(
+            File.entity_type == "die",
+            File.entity_id == die_id
+        ).all()
+        for file_obj in files:
+            db.delete(file_obj)
+        
+        # 3. Delete die components
+        components = db.query(DieComponent).filter(DieComponent.die_id == die_id).all()
+        for comp in components:
+            db.delete(comp)
+        
+        # 4. Delete die itself
+        db.delete(die)
+        
+        # Commit transaction
+        db.commit()
+        
+        return
+        
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Delete failed: {e}")
