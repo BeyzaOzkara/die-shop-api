@@ -134,6 +134,15 @@ class LotRemainingRead(BaseModel):
 class LotUpdateRemaining(BaseModel):
     remaining_kg: float
 
+class LotUpdate(BaseModel):
+    stock_item_id: Optional[int] = None
+    certificate_number: Optional[str] = None
+    supplier: Optional[str] = None
+    length_mm: Optional[int] = None
+    gross_weight_kg: Optional[float] = None
+    remaining_kg: Optional[float] = None
+    certificate_file_url: Optional[str] = None
+    received_date: Optional[datetime] = None
 
 class StockMovementBase(BaseModel):
     lot_id: int
@@ -368,6 +377,49 @@ def update_lot_remaining(lot_id: int, payload: LotUpdateRemaining, db: Session =
     if not lot:
         raise HTTPException(status_code=404, detail="Lot not found")
     lot.remaining_kg = payload.remaining_kg
+    db.commit()
+    db.refresh(lot)
+    return lot
+
+@router.patch("/lots/{lot_id}", response_model=LotRead, dependencies=[Depends(require_admin)])
+def update_lot(lot_id: int, payload: LotUpdate, db: Session = Depends(get_db)):
+    lot = (
+        db.query(Lot)
+        .options(joinedload(Lot.stock_item), joinedload(Lot.files))
+        .get(lot_id)
+    )
+    if not lot:
+        raise HTTPException(status_code=404, detail="Lot not found")
+
+    data = payload.model_dump(exclude_unset=True)
+
+    # Lot kullanıldı mı? (stok hareketi var mı?)
+    used_count = db.query(StockMovement).filter(StockMovement.lot_id == lot_id).count()
+
+    # Eğer kullanıldıysa kalan kg / brüt kg gibi kritik alanları kilitle (isteğe bağlı ama öneririm)
+    protected_fields_if_used = {"gross_weight_kg", "remaining_kg", "stock_item_id"}
+    if used_count > 0:
+        for f in protected_fields_if_used:
+            if f in data:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Bu lot stok hareketlerinde kullanıldığı için brüt/kalan/ürün alanları güncellenemez."
+                )
+
+    # normal alanlar
+    for field in [
+        "stock_item_id",
+        "certificate_number",
+        "supplier",
+        "length_mm",
+        "gross_weight_kg",
+        "remaining_kg",
+        "certificate_file_url",
+        "received_date",
+    ]:
+        if field in data:
+            setattr(lot, field, data[field])
+
     db.commit()
     db.refresh(lot)
     return lot
