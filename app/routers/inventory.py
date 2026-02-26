@@ -267,11 +267,61 @@ def create_steel_stock_item(payload: SteelStockItemCreate, db: Session = Depends
 # Lots
 # =========================
 
+# @router.get("/lots", response_model=List[LotRead])
+# def list_lots(include_stock_item: bool = True, db: Session = Depends(get_db)):
+#     query = db.query(Lot).options(joinedload(Lot.files))
+#     if include_stock_item:
+#         query = query.options(joinedload(Lot.stock_item))
+#     lots = query.order_by(Lot.received_date.desc()).all()
+#     return lots
+
 @router.get("/lots", response_model=List[LotRead])
-def list_lots(include_stock_item: bool = True, db: Session = Depends(get_db)):
+def list_lots(
+    include_stock_item: bool = True,
+
+    # 🔎 filters
+    alloy: Optional[str] = None,
+    diameter_mm: Optional[int] = None,
+    supplier: Optional[str] = None,
+    certificate_number: Optional[str] = None,
+    only_with_remaining: bool = False,
+
+    # opsiyonel tarih aralığı
+    received_from: Optional[datetime] = None,
+    received_to: Optional[datetime] = None,
+
+    db: Session = Depends(get_db),
+):
     query = db.query(Lot).options(joinedload(Lot.files))
+
     if include_stock_item:
         query = query.options(joinedload(Lot.stock_item))
+
+    # 🔸 alloy/diameter için SteelStockItem join gerekir
+    if alloy or diameter_mm:
+        query = query.join(Lot.stock_item)
+
+        if alloy and alloy.strip():
+            query = query.filter(SteelStockItem.alloy.ilike(f"%{alloy.strip()}%"))
+
+        if diameter_mm is not None:
+            query = query.filter(SteelStockItem.diameter_mm == diameter_mm)
+
+    if supplier and supplier.strip():
+        query = query.filter(Lot.supplier.ilike(f"%{supplier.strip()}%"))
+
+    if certificate_number and certificate_number.strip():
+        query = query.filter(Lot.certificate_number.ilike(f"%{certificate_number.strip()}%"))
+
+    if only_with_remaining:
+        query = query.filter(Lot.remaining_kg > 0)
+
+    if received_from:
+        query = query.filter(Lot.received_date >= received_from)
+
+    if received_to:
+        query = query.filter(Lot.received_date <= received_to)
+
     lots = query.order_by(Lot.received_date.desc()).all()
     return lots
 
@@ -354,14 +404,7 @@ def create_lot(
         .get(lot.id)
     )
     return lot
-# def create_lot(payload: LotCreate, db: Session = Depends(get_db)):
-#     lot = Lot(**payload.model_dump())
-#     db.add(lot)
-#     db.commit()
-#     db.refresh(lot)
-#     # eager load stock_item
-#     db.refresh(lot, attribute_names=["stock_item"])
-#     return lot
+
 
 @router.get("/lots/{lot_id}/remaining", response_model=LotRemainingRead)
 def get_lot_remaining(lot_id: int, db: Session = Depends(get_db)):
