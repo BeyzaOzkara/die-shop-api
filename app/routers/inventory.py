@@ -19,6 +19,11 @@ from ..models import (
     StockMovement,
     OperationType,
     Supplier,
+    WorkOrder,
+    ProductionOrder,
+    Die,
+    DieComponent,
+    ComponentType,
 )
 from ..deps import require_admin
 
@@ -170,8 +175,48 @@ class StockMovementRead(StockMovementBase):
     id: int
     created_at: datetime
 
+    # --- nested schemas for movements list ---
+
+    class _DieNested(BaseModel):
+        id: int
+        die_number: str
+        model_config = ConfigDict(from_attributes=True)
+
+    class _ProductionOrderNested(BaseModel):
+        id: int
+        die: Optional['StockMovementRead._DieNested'] = None
+        model_config = ConfigDict(from_attributes=True)
+
+    class _ComponentTypeNested(BaseModel):
+        id: int
+        name: str
+        model_config = ConfigDict(from_attributes=True)
+
+    class _DieComponentNested(BaseModel):
+        id: int
+        component_type: Optional['StockMovementRead._ComponentTypeNested'] = None
+        model_config = ConfigDict(from_attributes=True)
+
+    class _WorkOrderNested(BaseModel):
+        id: int
+        order_number: str
+        production_order: Optional['StockMovementRead._ProductionOrderNested'] = None
+        die_component: Optional['StockMovementRead._DieComponentNested'] = None
+        model_config = ConfigDict(from_attributes=True)
+
+    class _LotNested(BaseModel):
+        id: int
+        stock_item: Optional[StockItemNested] = None
+        supplier_ref: Optional[SupplierNested] = None
+        supplier: str = ''
+        model_config = ConfigDict(from_attributes=True)
+
+    work_order: Optional[_WorkOrderNested] = None
+    lot: Optional[_LotNested] = None
+
     model_config = ConfigDict(from_attributes=True)
 
+StockMovementRead.model_rebuild()
 
 # =========================
 # Work Centers
@@ -566,6 +611,15 @@ def create_stock_movement(payload: StockMovementCreate, db: Session = Depends(ge
 def list_stock_movements(db: Session = Depends(get_db)):
     return (
         db.query(StockMovement)
-        .order_by(StockMovement.movement_date.desc())
+        .options(
+            joinedload(StockMovement.lot).joinedload(Lot.stock_item),
+            joinedload(StockMovement.lot).joinedload(Lot.supplier_ref),
+            joinedload(StockMovement.work_order)
+                .joinedload(WorkOrder.production_order)
+                .joinedload(ProductionOrder.die),
+            joinedload(StockMovement.work_order)
+                .joinedload(WorkOrder.die_component)
+                .joinedload(DieComponent.component_type),
+        )
         .all()
     )
