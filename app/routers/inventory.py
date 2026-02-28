@@ -4,6 +4,7 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as UploadFileField, Form
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import or_
 from pydantic import BaseModel, ConfigDict
 from datetime import datetime
 
@@ -17,6 +18,7 @@ from ..models import (
     Lot,
     StockMovement,
     OperationType,
+    Supplier,
 )
 from ..deps import require_admin
 
@@ -90,10 +92,16 @@ class FileRead(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+class SupplierNested(BaseModel):
+    id: int
+    name: str
+    model_config = ConfigDict(from_attributes=True)
+
 class LotBase(BaseModel):
     stock_item_id: int
     certificate_number: str
-    supplier: str
+    supplier: Optional[str] = None        # legacy string (backward compat)
+    supplier_id: Optional[int] = None     # new FK
     length_mm: int
     gross_weight_kg: float
     remaining_kg: float
@@ -118,6 +126,7 @@ class LotRead(LotBase):
     id: int
     created_at: datetime
     stock_item: Optional[StockItemNested] = None
+    supplier_ref: Optional[SupplierNested] = None   # opsiyonel supplier bilgisi
     files: List[FileRead] = []   # YENİ
 
     model_config = ConfigDict(from_attributes=True)
@@ -137,7 +146,8 @@ class LotUpdateRemaining(BaseModel):
 class LotUpdate(BaseModel):
     stock_item_id: Optional[int] = None
     certificate_number: Optional[str] = None
-    supplier: Optional[str] = None
+    supplier: Optional[str] = None          # legacy string
+    supplier_id: Optional[int] = None       # NEW FK
     length_mm: Optional[int] = None
     gross_weight_kg: Optional[float] = None
     remaining_kg: Optional[float] = None
@@ -292,8 +302,11 @@ def list_lots(
 
     db: Session = Depends(get_db),
 ):
-    query = db.query(Lot).options(joinedload(Lot.files))
-
+    # query = db.query(Lot).options(joinedload(Lot.files))
+    query = db.query(Lot).options(
+        joinedload(Lot.files),
+        joinedload(Lot.supplier_ref),
+    )
     if include_stock_item:
         query = query.options(joinedload(Lot.stock_item))
 
@@ -307,8 +320,16 @@ def list_lots(
         if diameter_mm is not None:
             query = query.filter(SteelStockItem.diameter_mm == diameter_mm)
 
+    # if supplier and supplier.strip():
+    #     query = query.filter(Lot.supplier.ilike(f"%{supplier.strip()}%"))
     if supplier and supplier.strip():
-        query = query.filter(Lot.supplier.ilike(f"%{supplier.strip()}%"))
+        s = supplier.strip()
+        query = query.outerjoin(Lot.supplier_ref).filter(
+            or_(
+                Lot.supplier.ilike(f"%{s}%"),          # legacy
+                Supplier.name.ilike(f"%{s}%"),         # FK
+            )
+        )
 
     if certificate_number and certificate_number.strip():
         query = query.filter(Lot.certificate_number.ilike(f"%{certificate_number.strip()}%"))
@@ -359,6 +380,11 @@ def create_lot(
     stock_item = db.query(SteelStockItem).get(p.stock_item_id)
     if not stock_item:
         raise HTTPException(status_code=400, detail="Invalid stock_item_id")
+    
+    if p.supplier_id is not None:
+        supplier = db.query(Supplier).filter(Supplier.id == p.supplier_id, Supplier.is_active == True).first()
+        if not supplier:
+            raise HTTPException(status_code=400, detail="Geçersiz veya inaktif tedarikçi.")
 
     # 3) atomik transaction
     try:
@@ -428,7 +454,7 @@ def update_lot_remaining(lot_id: int, payload: LotUpdateRemaining, db: Session =
 def update_lot(lot_id: int, payload: LotUpdate, db: Session = Depends(get_db)):
     lot = (
         db.query(Lot)
-        .options(joinedload(Lot.stock_item), joinedload(Lot.files))
+        .options(joinedload(Lot.stock_item), joinedload(Lot.files), joinedload(Lot.supplier_ref))
         .get(lot_id)
     )
     if not lot:
@@ -448,12 +474,33 @@ def update_lot(lot_id: int, payload: LotUpdate, db: Session = Depends(get_db)):
                     status_code=409,
                     detail="Bu lot stok hareketlerinde kullanıldığı için brüt/kalan/ürün alanları güncellenemez."
                 )
+    # supplier_id geldiyse validate + set + legacy supplier string sync
+    if "supplier_id" in data:
+        new_supplier_id = data["supplier_id"]
 
-    # normal alanlar
+        if new_supplier_id is None:
+            # supplier ilişkisini kaldırmak istiyorsan
+            lot.supplier_id = None
+            # legacy string'i de istersen temizle (opsiyonel)
+            lot.supplier = data.get("supplier", lot.supplier)  # supplier ayrıca geldiyse onu bırak
+        else:
+            supplier = (
+                db.query(Supplier)
+                .filter(Supplier.id == new_supplier_id, Supplier.is_active == True)
+                .first()
+            )
+            if not supplier:
+                raise HTTPException(status_code=400, detail="Geçersiz veya inaktif tedarikçi.")
+
+            lot.supplier_id = supplier.id
+            # legacy alanı da otomatik eşitle
+            lot.supplier = supplier.name
+
+    # normal alanlar (supplier burada opsiyonel; supplier_id set ettiyse zaten üstte override ediliyor)
     for field in [
         "stock_item_id",
         "certificate_number",
-        "supplier",
+        "supplier",              # legacy manual edit (supplier_id yoksa anlamlı)
         "length_mm",
         "gross_weight_kg",
         "remaining_kg",
@@ -461,10 +508,25 @@ def update_lot(lot_id: int, payload: LotUpdate, db: Session = Depends(get_db)):
         "received_date",
     ]:
         if field in data:
+            # supplier_id set edildiyse supplier'ı override etmiştik;
+            # burada tekrar set edilmesini istemiyorsan bir guard koy:
+            if field == "supplier" and lot.supplier_id is not None and "supplier_id" in data:
+                continue
             setattr(lot, field, data[field])
 
     db.commit()
     db.refresh(lot)
+
+    # response için supplier_ref ilişkisinin dolu gelmesi adına tekrar load edelim
+    lot = (
+        db.query(Lot)
+        .options(
+            joinedload(Lot.stock_item),
+            joinedload(Lot.files),
+            joinedload(Lot.supplier_ref),
+        )
+        .get(lot_id)
+    )
     return lot
 
 @router.delete("/lots/{lot_id}", status_code=204, dependencies=[Depends(require_admin)])

@@ -233,6 +233,26 @@ class ComponentBOM(Base):
     operation_type = relationship("OperationType") # new
     preferred_work_center = relationship("WorkCenter", back_populates="preferred_component_boms")
 
+# =========================
+# SUPPLIER
+# =========================
+
+class Supplier(Base):
+    __tablename__ = "supplier"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, nullable=False, index=True)
+    tax_no = Column(String, nullable=True)
+    contact_name = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
+    email = Column(String, nullable=True)
+    address = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    lots = relationship("Lot", back_populates="supplier_ref")
 
 # =========================
 # STEEL STOCK & LOTS
@@ -256,7 +276,8 @@ class Lot(Base):
     id = Column(Integer, primary_key=True, index=True)
     stock_item_id = Column(Integer, ForeignKey("steel_stock_item.id"), nullable=False)
     certificate_number = Column(String, nullable=False)
-    supplier = Column(String, nullable=False)
+    supplier = Column(String, nullable=True)  # legacy string – kept for backward compat
+    supplier_id = Column(Integer, ForeignKey("supplier.id"), nullable=True)  # new FK
     length_mm = Column(Integer, nullable=False)
     gross_weight_kg = Column(Numeric(12, 3), nullable=False)
     remaining_kg = Column(Numeric(12, 3), nullable=False)
@@ -265,6 +286,7 @@ class Lot(Base):
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
     stock_item = relationship("SteelStockItem", back_populates="lots")
+    supplier_ref = relationship("Supplier", back_populates="lots")
     work_orders = relationship("WorkOrder", back_populates="lot")
     stock_movements = relationship("StockMovement", back_populates="lot")
 

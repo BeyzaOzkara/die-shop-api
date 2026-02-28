@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from .config import settings
 
 from .database import engine, Base
-from .routers import inventory, operators, operation_types, die_config, dies, production_orders, component_bom, work_orders, operator_panel
+from .routers import inventory, suppliers, operators, operation_types, die_config, dies, production_orders, component_bom, work_orders, operator_panel
 from app.routers.auth import router as auth_router
 
 app = FastAPI(
@@ -43,6 +43,7 @@ app.include_router(component_bom.router)
 app.include_router(operators.router)
 app.include_router(operation_types.router)
 app.include_router(operator_panel.router)
+app.include_router(suppliers.router)
 
 @app.get("/health")
 def health_check():
