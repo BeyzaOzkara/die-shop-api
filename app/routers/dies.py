@@ -3,6 +3,7 @@ from typing import List, Optional
 import json
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as UploadFileField, Form
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func, distinct
 from pydantic import BaseModel, ConfigDict
 from datetime import datetime
 from ..services.file_storage import save_uploaded_file
@@ -125,6 +126,24 @@ class DieCreateIn(BaseModel):
 
     components: List[DieComponentCreate] = []
 
+# =======================================
+# STATS SCHEMAS
+# =======================================
+
+class DieStatsComponentItem(BaseModel):
+    component_type_id: int
+    component_type_name: str
+    component_rows_count: int
+    die_count: int
+
+    class Config:
+        from_attributes = True
+
+
+class DieStatsResponse(BaseModel):
+    total_dies: int
+    total_profiles: int
+    components: List[DieStatsComponentItem]
 
 class DieCreate(DieBase):
     # Supabase: insert({ ...die, status: 'Draft' })
@@ -203,6 +222,49 @@ def list_dies(db: Session = Depends(get_db)):
             die_dict["die_type_ref"] = None
         result.append(DieRead.model_validate(die_dict))
     return result
+
+@router.get("/stats", response_model=DieStatsResponse)
+def get_die_stats(db: Session = Depends(get_db)):
+    """Global aggregated stats — independent of pagination."""
+    # 1) total dies
+    total_dies: int = db.query(func.count(Die.id)).scalar() or 0
+
+    # 2) distinct profile_no (ignore blank/null)
+    total_profiles: int = (
+        db.query(func.count(distinct(Die.profile_no)))
+        .filter(Die.profile_no.isnot(None), Die.profile_no != '')
+        .scalar()
+    ) or 0
+
+    # 3) component breakdown
+    rows = (
+        db.query(
+            ComponentType.id.label('component_type_id'),
+            ComponentType.name.label('component_type_name'),
+            func.count(DieComponent.id).label('component_rows_count'),
+            func.count(distinct(DieComponent.die_id)).label('die_count'),
+        )
+        .join(DieComponent, DieComponent.component_type_id == ComponentType.id)
+        .group_by(ComponentType.id, ComponentType.name)
+        .order_by(func.count(DieComponent.id).desc())
+        .all()
+    )
+
+    components = [
+        DieStatsComponentItem(
+            component_type_id=r.component_type_id,
+            component_type_name=r.component_type_name,
+            component_rows_count=r.component_rows_count,
+            die_count=r.die_count,
+        )
+        for r in rows
+    ]
+
+    return DieStatsResponse(
+        total_dies=total_dies,
+        total_profiles=total_profiles,
+        components=components,
+    )
 
 
 @router.get("/{die_id}", response_model=DieRead)
