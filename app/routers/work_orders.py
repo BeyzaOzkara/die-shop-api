@@ -666,6 +666,9 @@ def update_work_order_operation(
         elif new_status == OperationStatus.Paused:
             require_work_center()
             op.status = OperationStatus.Paused
+            wc = db.query(WorkCenter).get(op.work_center_id)
+            if wc:
+                wc.status = WorkCenterStatus.Available
             # log eklenecek
 
         elif new_status == OperationStatus.Cancelled:
