@@ -253,9 +253,3 @@ def reorder_bom_operations(
     except Exception:
         db.rollback()
         raise
-    # # Update sequence numbers
-    # for index, bom_id in enumerate(payload.bom_ids):
-    #     bom = bom_map[bom_id]
-    #     bom.sequence_number = index + 1
-    
-    # db.commit()

@@ -653,11 +653,6 @@ def update_work_order_operation(
             op.status = OperationStatus.InProgress
             op.started_at = datetime.now(timezone.utc)
 
-            # İstersek operatör adını da burada güncelleriz
-            # operator adı değil sicil ekleyeceğiz ama buraya değil logda tutucaz
-            # if "operator_name" in data and data["operator_name"]:
-            #     op.operator_name = data["operator_name"]
-
             # Work center'ı meşgul yap
             wc = db.query(WorkCenter).get(op.work_center_id)
             if wc:
@@ -666,6 +661,9 @@ def update_work_order_operation(
         elif new_status == OperationStatus.Paused:
             require_work_center()
             op.status = OperationStatus.Paused
+            wc = db.query(WorkCenter).get(op.work_center_id)
+            if wc:
+                wc.status = WorkCenterStatus.Available
             # log eklenecek
 
         elif new_status == OperationStatus.Cancelled:
