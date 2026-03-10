@@ -263,7 +263,8 @@ def start_operation(
     
     # Update operation
     op.work_center_id = wc.id
-    op.operator_name = operator.name  # Store operator name for display
+    # NOTE: operator_name is intentionally NOT written to the row.
+    # Operator attribution lives exclusively in DomainActionLog.
     op.status = OperationStatus.InProgress
     op.started_at = datetime.now(timezone.utc)
     
@@ -487,7 +488,7 @@ def batch_start_operations(
             # Start operation
             before = snapshot_operation(op)
             op.work_center_id = wc.id
-            op.operator_name = operator.name
+            # NOTE: operator_name intentionally NOT written (attribution via log only)
             op.status = OperationStatus.InProgress
             op.started_at = datetime.now(timezone.utc)
             
@@ -525,3 +526,441 @@ def batch_start_operations(
         failed_operation_ids=failed_ids,
         errors=errors,
     )
+
+
+# =========================
+# Simple Operator Action Schemas
+# =========================
+
+class SimpleOperatorActionRequest(BaseModel):
+    operator_id: int
+    reason_code: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class OperatorActionResponse(BaseModel): 
+    id: int
+    status: OperationStatus
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    action_logged: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class LastOperatorEntry(BaseModel):
+    operator_id: int
+    operator_name: str
+    action_type: str
+    performed_at: datetime
+
+
+# =========================
+# Pause
+# =========================
+
+@router.post("/operations/{operation_id}/pause", response_model=OperatorActionResponse)
+def pause_operation(
+    operation_id: int,
+    payload: SimpleOperatorActionRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Pause an in-progress operation. Logs OPERATION_PAUSED.
+    """
+    operator = db.get(Operator, payload.operator_id)
+    if not operator or not operator.is_active:
+        raise HTTPException(status_code=404, detail="Operator not found or inactive")
+
+    op = get_operation_with_context(db, operation_id)
+    if not op:
+        raise HTTPException(status_code=404, detail="Operation not found")
+
+    if op.status != OperationStatus.InProgress:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot pause operation in {op.status.value} status",
+        )
+
+    before = snapshot_operation(op)
+
+    # Calculate duration so far
+    duration_minutes = None
+    if op.started_at:
+        elapsed = datetime.now(timezone.utc) - op.started_at.replace(tzinfo=timezone.utc) \
+            if op.started_at.tzinfo is None else datetime.now(timezone.utc) - op.started_at
+        duration_minutes = int(elapsed.total_seconds() / 60)
+
+    op.status = OperationStatus.Paused
+    wc = db.query(WorkCenter).get(op.work_center_id)
+    if wc:
+        wc.status = WorkCenterStatus.Available
+
+    log_action(
+        db=db,
+        action_type="OPERATION_PAUSED",
+        actor_type="operator",
+        actor_id=operator.id,
+        entity_type="work_order_operation",
+        entity_id=op.id,
+        reason=payload.reason_code,
+        notes=payload.notes,
+        before_snapshot=before,
+        after_snapshot=snapshot_operation(op),
+        meta_data={
+            "work_center_id": op.work_center_id,
+            "operator_rfid": operator.rfid_code,
+            "duration_minutes": duration_minutes,
+        },
+    )
+
+    db.commit()
+    db.refresh(op)
+
+    return OperatorActionResponse(
+        id=op.id,
+        status=op.status,
+        started_at=op.started_at,
+        completed_at=op.completed_at,
+        action_logged="OPERATION_PAUSED",
+    )
+
+
+# =========================
+# Resume
+# =========================
+
+@router.post("/operations/{operation_id}/resume", response_model=OperatorActionResponse)
+def resume_operation(
+    operation_id: int,
+    payload: SimpleOperatorActionRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Resume a paused operation. Logs OPERATION_RESUME.
+    This is equivalent to start for a Paused operation but explicitly named.
+    """
+    operator = db.get(Operator, payload.operator_id)
+    if not operator or not operator.is_active:
+        raise HTTPException(status_code=404, detail="Operator not found or inactive")
+
+    op = get_operation_with_context(db, operation_id)
+    if not op:
+        raise HTTPException(status_code=404, detail="Operation not found")
+
+    if op.status != OperationStatus.Paused:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot resume operation in {op.status.value} status — must be Paused",
+        )
+
+    before = snapshot_operation(op)
+    op.status = OperationStatus.InProgress
+    wc = db.query(WorkCenter).get(op.work_center_id)
+    if wc:
+        wc.status = WorkCenterStatus.Busy
+
+    log_action(
+        db=db,
+        action_type="OPERATION_RESUME",
+        actor_type="operator",
+        actor_id=operator.id,
+        entity_type="work_order_operation",
+        entity_id=op.id,
+        notes=payload.notes,
+        before_snapshot=before,
+        after_snapshot=snapshot_operation(op),
+        meta_data={
+            "work_center_id": op.work_center_id,
+            "operator_rfid": operator.rfid_code,
+        },
+    )
+
+    db.commit()
+    db.refresh(op)
+
+    return OperatorActionResponse(
+        id=op.id,
+        status=op.status,
+        started_at=op.started_at,
+        completed_at=op.completed_at,
+        action_logged="OPERATION_RESUME",
+    )
+
+
+# =========================
+# Complete
+# =========================
+
+@router.post("/operations/{operation_id}/complete", response_model=OperatorActionResponse)
+def complete_operation(
+    operation_id: int,
+    payload: SimpleOperatorActionRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Complete an in-progress operation. Logs OPERATION_COMPLETE.
+    Also frees the assigned work center.
+    """
+    operator = db.get(Operator, payload.operator_id)
+    if not operator or not operator.is_active:
+        raise HTTPException(status_code=404, detail="Operator not found or inactive")
+
+    op = get_operation_with_context(db, operation_id)
+    if not op:
+        raise HTTPException(status_code=404, detail="Operation not found")
+
+    if op.status != OperationStatus.InProgress:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot complete operation in {op.status.value} status",
+        )
+
+    before = snapshot_operation(op)
+    op.status = OperationStatus.Completed
+    op.completed_at = datetime.now(timezone.utc)
+
+    # Free work center
+    if op.work_center_id:
+        wc = db.get(WorkCenter, op.work_center_id)
+        if wc:
+            wc.status = WorkCenterStatus.Available
+
+    log_action(
+        db=db,
+        action_type="OPERATION_COMPLETE",
+        actor_type="operator",
+        actor_id=operator.id,
+        entity_type="work_order_operation",
+        entity_id=op.id,
+        notes=payload.notes,
+        before_snapshot=before,
+        after_snapshot=snapshot_operation(op),
+        meta_data={
+            "work_center_id": op.work_center_id,
+            "operator_rfid": operator.rfid_code,
+        },
+    )
+
+    db.commit()
+    db.refresh(op)
+
+    return OperatorActionResponse(
+        id=op.id,
+        status=op.status,
+        started_at=op.started_at,
+        completed_at=op.completed_at,
+        action_logged="OPERATION_COMPLETE",
+    )
+
+
+# =========================
+# Cancel
+# =========================
+
+@router.post("/operations/{operation_id}/cancel", response_model=OperatorActionResponse)
+def cancel_operation(
+    operation_id: int,
+    payload: SimpleOperatorActionRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Cancel an operation (from any non-terminal status). Logs OPERATION_CANCEL.
+    Also frees the assigned work center if one was assigned.
+    """
+    operator = db.get(Operator, payload.operator_id)
+    if not operator or not operator.is_active:
+        raise HTTPException(status_code=404, detail="Operator not found or inactive")
+
+    op = get_operation_with_context(db, operation_id)
+    if not op:
+        raise HTTPException(status_code=404, detail="Operation not found")
+
+    if op.status in (OperationStatus.Completed, OperationStatus.Cancelled):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot cancel operation in {op.status.value} status",
+        )
+
+    before = snapshot_operation(op)
+    op.status = OperationStatus.Cancelled
+    op.completed_at = datetime.now(timezone.utc)
+
+    # Free work center if assigned
+    if op.work_center_id:
+        wc = db.get(WorkCenter, op.work_center_id)
+        if wc:
+            wc.status = WorkCenterStatus.Available
+
+    log_action(
+        db=db,
+        action_type="OPERATION_CANCEL",
+        actor_type="operator",
+        actor_id=operator.id,
+        entity_type="work_order_operation",
+        entity_id=op.id,
+        reason=payload.reason_code,
+        notes=payload.notes,
+        before_snapshot=before,
+        after_snapshot={"status": "Cancelled", "completed_at": op.completed_at},
+        meta_data={
+            "work_center_id": op.work_center_id,
+            "operator_rfid": operator.rfid_code,
+        },
+    )
+
+    db.commit()
+    db.refresh(op)
+
+    return OperatorActionResponse(
+        id=op.id,
+        status=op.status,
+        started_at=op.started_at,
+        completed_at=op.completed_at,
+        action_logged="OPERATION_CANCEL",
+    )
+
+
+# =========================
+# Reject  (QC refuses a completed operation)
+# =========================
+
+@router.post("/operations/{operation_id}/reject", response_model=OperatorActionResponse)
+def reject_operation(
+    operation_id: int,
+    payload: SimpleOperatorActionRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Reject a completed operation (e.g. QC rejection). Logs OPERATION_REJECT.
+    Resets status back to Waiting so it can be restarted.
+    Requires actor to have QualityControl or Supervisor role.
+    """
+    from ..models import OperatorRole
+
+    operator = db.get(Operator, payload.operator_id)
+    if not operator or not operator.is_active:
+        raise HTTPException(status_code=404, detail="Operator not found or inactive")
+
+    allowed_roles = {OperatorRole.QualityControl, OperatorRole.Supervisor, OperatorRole.Manager}
+    if operator.role not in allowed_roles:
+        raise HTTPException(
+            status_code=403,
+            detail="Only QualityControl, Supervisor, or Manager can reject an operation",
+        )
+
+    op = get_operation_with_context(db, operation_id)
+    if not op:
+        raise HTTPException(status_code=404, detail="Operation not found")
+
+    if op.status != OperationStatus.Completed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot reject operation in {op.status.value} status — must be Completed",
+        )
+
+    before = snapshot_operation(op)
+    op.status = OperationStatus.Waiting
+    op.completed_at = None
+
+    log_action(
+        db=db,
+        action_type="OPERATION_REJECT",
+        actor_type="operator",
+        actor_id=operator.id,
+        entity_type="work_order_operation",
+        entity_id=op.id,
+        reason=payload.reason_code,
+        notes=payload.notes,
+        before_snapshot=before,
+        after_snapshot=snapshot_operation(op),
+        meta_data={
+            "operator_rfid": operator.rfid_code,
+            "rejector_role": operator.role.value,
+        },
+    )
+
+    db.commit()
+    db.refresh(op)
+
+    return OperatorActionResponse(
+        id=op.id,
+        status=op.status,
+        started_at=op.started_at,
+        completed_at=op.completed_at,
+        action_logged="OPERATION_REJECT",
+    )
+
+
+# =========================
+# Last-operator batch query  (for admin UI list views)
+# =========================
+
+@router.get("/operations/last-operators")
+def get_last_operators(
+    operation_ids: str,  # comma-separated list: "1,2,3"
+    db: Session = Depends(get_db),
+):
+    """
+    For each operation_id, return the last operator who started or resumed it.
+    Queries DomainActionLog — operator_name is NOT stored on the operation row.
+
+    Returns:
+        { "<operation_id>": { operator_id, operator_name, action_type, performed_at } }
+    """
+    try:
+        ids = [int(x.strip()) for x in operation_ids.split(",") if x.strip()]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="operation_ids must be comma-separated integers")
+
+    if not ids:
+        return {}
+
+    # Find the most recent OPERATION_START or OPERATION_RESUME log for each operation_id
+    from sqlalchemy import func as sqlfunc
+
+    # Subquery: max created_at per entity_id for the relevant action types
+    subq = (
+        db.query(
+            DomainActionLog.entity_id,
+            sqlfunc.max(DomainActionLog.created_at).label("max_created_at"),
+        )
+        .filter(
+            DomainActionLog.entity_type == "work_order_operation",
+            DomainActionLog.entity_id.in_(ids),
+            DomainActionLog.action_type.in_(["OPERATION_START", "OPERATION_RESUME"]),
+            DomainActionLog.actor_type == "operator",
+        )
+        .group_by(DomainActionLog.entity_id)
+        .subquery()
+    )
+
+    # Join back to get full log rows
+    logs = (
+        db.query(DomainActionLog, Operator)
+        .join(
+            subq,
+            and_(
+                DomainActionLog.entity_id == subq.c.entity_id,
+                DomainActionLog.created_at == subq.c.max_created_at,
+            ),
+        )
+        .join(Operator, Operator.id == DomainActionLog.actor_id)
+        .filter(
+            DomainActionLog.entity_type == "work_order_operation",
+            DomainActionLog.action_type.in_(["OPERATION_START", "OPERATION_RESUME"]),
+            DomainActionLog.actor_type == "operator",
+        )
+        .all()
+    )
+
+    result = {}
+    for log_entry, op_actor in logs:
+        result[str(log_entry.entity_id)] = {
+            "operator_id": op_actor.id,
+            "operator_name": op_actor.name,
+            "action_type": log_entry.action_type,
+            "performed_at": log_entry.created_at.isoformat() if log_entry.created_at else None,
+        }
+
+    return result
