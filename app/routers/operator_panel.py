@@ -263,6 +263,8 @@ def start_operation(
     
     # Update operation
     op.work_center_id = wc.id
+    # NOTE: operator_name is intentionally NOT written to the row.
+    # Operator attribution lives exclusively in DomainActionLog.
     op.status = OperationStatus.InProgress
     op.started_at = datetime.now(timezone.utc)
     
@@ -523,7 +525,6 @@ def batch_start_operations(
         failed_operation_ids=failed_ids,
         errors=errors,
     )
-
 
 
 # =========================

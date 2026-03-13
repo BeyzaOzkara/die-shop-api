@@ -508,9 +508,9 @@ class DomainActionLog(Base):
     __tablename__ = "domain_action_log"
 
     id = Column(Integer, primary_key=True, index=True)
-    action_type = Column(String, nullable=False, index=True)  # e.g. "OPERATION_START"
+    action_type = Column(String, nullable=False, index=True)  # e.g. "OPERATION_START", "OPERATION_PAUSE", "OPERATION_COMPLETE", "OPERATION_CANCEL", "OPERATION_RESUME"..
     actor_type = Column(String, nullable=False)               # "user", "operator", "system"
-    actor_id = Column(Integer, nullable=True)                 # FK optional for system actions
+    actor_id = Column(Integer, nullable=True)                 # FK optional for system actions, if user fk user.id, if operator fk operator.id
     entity_type = Column(String, nullable=False, index=True)  # entity table name
     entity_id = Column(Integer, nullable=False)
     reason = Column(String, nullable=True)                    # reason code for stops
