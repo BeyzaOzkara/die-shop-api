@@ -1,11 +1,11 @@
 # backend/routers/dies.py
 from typing import List, Optional
 import json
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as UploadFileField, Form
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File as UploadFileField, Form
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, distinct
+from sqlalchemy import func, distinct, or_
 from pydantic import BaseModel, ConfigDict
-from datetime import datetime
+from datetime import datetime, date
 from ..services.file_storage import save_uploaded_file
 from ..config import settings
 from ..database import get_db
@@ -59,8 +59,6 @@ class StockItemNested(BaseModel):
 
 class FileRead(BaseModel):
     id: int
-    # entity_type: str
-    # entity_id: int
     original_name: str
     storage_path: str
     mime_type: str
@@ -195,33 +193,133 @@ class DieRead(DieBase):
 DieRead.model_rebuild()
 
 
+class DiePageResponse(BaseModel):
+    items: List[DieRead]
+    total: int
+
+
 # =========================
 # Die endpoints
 # =========================
 
-@router.get("/", response_model=List[DieRead])
-def list_dies(db: Session = Depends(get_db)):
+@router.get("/", response_model=DiePageResponse)
+def list_dies(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(30, ge=1, le=200),
+    search: Optional[str] = Query(None, description="Search die_number, profile_no, customer_name"),
+    status: Optional[str] = Query(None, description="DieStatus value"),
+    die_type_id: Optional[int] = Query(None),
+    is_revisioned: Optional[bool] = Query(None),
+    # Numeric range filters
+    die_diameter_mm_min: Optional[float] = Query(None, description="die_diameter_mm >= value"),
+    die_diameter_mm_max: Optional[float] = Query(None, description="die_diameter_mm <= value"),
+    total_package_length_mm_min: Optional[float] = Query(None, description="total_package_length_mm >= value"),
+    total_package_length_mm_max: Optional[float] = Query(None, description="total_package_length_mm <= value"),
+    figure_count: Optional[int] = Query(None, description="Exact match on figure_count"),
+    press_code: Optional[str] = Query(None, description="press_code ilike"),
+    date_from: Optional[date] = Query(None, description="Filter created_at >= date_from"),
+    date_to: Optional[date] = Query(None, description="Filter created_at <= date_to"),
+    db: Session = Depends(get_db),
+):
+    """Return paginated, filtered dies."""
+    q = db.query(Die)
+
+    # --- Search across die_number, profile_no, customer_name ---
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        q = q.filter(
+            or_(
+                Die.die_number.ilike(term),
+                Die.profile_no.ilike(term),
+                Die.customer_name.ilike(term),
+            )
+        )
+
+    # --- Exact / enum filters ---
+    if status:
+        try:
+            q = q.filter(Die.status == DieStatus(status))
+        except ValueError:
+            pass  # ignore unknown status values
+
+    if die_type_id is not None:
+        q = q.filter(Die.die_type_id == die_type_id)
+
+    if is_revisioned is not None:
+        q = q.filter(Die.is_revisioned == is_revisioned)
+
+    # --- Date range (inclusive) ---
+    if date_from:
+        q = q.filter(func.date(Die.created_at) >= date_from)
+    if date_to:
+        q = q.filter(func.date(Die.created_at) <= date_to)
+
+    # --- Numeric range filters ---
+    if die_diameter_mm_min is not None:
+        q = q.filter(Die.die_diameter_mm >= die_diameter_mm_min)
+    if die_diameter_mm_max is not None:
+        q = q.filter(Die.die_diameter_mm <= die_diameter_mm_max)
+    if total_package_length_mm_min is not None:
+        q = q.filter(Die.total_package_length_mm >= total_package_length_mm_min)
+    if total_package_length_mm_max is not None:
+        q = q.filter(Die.total_package_length_mm <= total_package_length_mm_max)
+
+    # --- Exact integer filter ---
+    if figure_count is not None:
+        q = q.filter(Die.figure_count == figure_count)
+
+    # --- Text filter ---
+    if press_code and press_code.strip():
+        q = q.filter(Die.press_code.ilike(f"%{press_code.strip()}%"))
+
+    # --- Count before pagination ---
+    total: int = q.with_entities(func.count(Die.id)).scalar() or 0
+
+    # --- Fetch page ---
     dies = (
-        db.query(Die)
-        # .options(joinedload(Die.die_type), joinedload(Die.files))
-        .options(
+        q.options(
             joinedload(Die.die_type),
             joinedload(Die.files),
             joinedload(Die.components).joinedload(DieComponent.component_type),
             joinedload(Die.components).joinedload(DieComponent.stock_item),
         )
         .order_by(Die.created_at.desc())
+        .offset(skip)
+        .limit(limit)
         .all()
     )
-    result: List[DieRead] = []
+
+    items: List[DieRead] = []
     for die in dies:
         die_dict = DieRead.model_validate(die).model_dump()
-        if die.die_type:
-            die_dict["die_type_ref"] = DieTypeRef.model_validate(die.die_type)
-        else:
-            die_dict["die_type_ref"] = None
-        result.append(DieRead.model_validate(die_dict))
-    return result
+        die_dict["die_type_ref"] = DieTypeRef.model_validate(die.die_type) if die.die_type else None
+        items.append(DieRead.model_validate(die_dict))
+ 
+    return DiePageResponse(items=items, total=total)
+
+# @router.get("/", response_model=List[DieRead])
+# def list_dies(db: Session = Depends(get_db)):
+#     dies = (
+#         db.query(Die)
+#         # .options(joinedload(Die.die_type), joinedload(Die.files))
+#         .options(
+#             joinedload(Die.die_type),
+#             joinedload(Die.files),
+#             joinedload(Die.components).joinedload(DieComponent.component_type),
+#             joinedload(Die.components).joinedload(DieComponent.stock_item),
+#         )
+#         .order_by(Die.created_at.desc())
+#         .all()
+#     )
+#     result: List[DieRead] = []
+#     for die in dies:
+#         die_dict = DieRead.model_validate(die).model_dump()
+#         if die.die_type:
+#             die_dict["die_type_ref"] = DieTypeRef.model_validate(die.die_type)
+#         else:
+#             die_dict["die_type_ref"] = None
+#         result.append(DieRead.model_validate(die_dict))
+#     return result
 
 @router.get("/stats", response_model=DieStatsResponse)
 def get_die_stats(db: Session = Depends(get_db)):
