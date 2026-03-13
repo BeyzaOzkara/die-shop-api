@@ -263,7 +263,6 @@ def start_operation(
     
     # Update operation
     op.work_center_id = wc.id
-    # op.operator_name = operator.name  # operator bilgileri domainactionlogda
     op.status = OperationStatus.InProgress
     op.started_at = datetime.now(timezone.utc)
     
@@ -487,7 +486,6 @@ def batch_start_operations(
             # Start operation
             before = snapshot_operation(op)
             op.work_center_id = wc.id
-            # op.operator_name = operator.name
             op.status = OperationStatus.InProgress
             op.started_at = datetime.now(timezone.utc)
             
