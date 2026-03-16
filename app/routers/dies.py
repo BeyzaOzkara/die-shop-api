@@ -81,6 +81,8 @@ class DieBase(BaseModel):
     press_code: Optional[str] = None
     
     is_revisioned: bool = False
+    expected_completion_date: Optional[date] = None
+    description: Optional[str] = None
 
 
 class DieComponentBase(BaseModel):
@@ -121,6 +123,8 @@ class DieCreateIn(BaseModel):
     # ... profile_no, figure_count, customer_name, press_code, is_fason
 
     is_revisioned: bool = False
+    expected_completion_date: Optional[date] = None
+    description: Optional[str] = None
 
     components: List[DieComponentCreate] = []
 
@@ -160,6 +164,8 @@ class DieUpdate(BaseModel):
     customer_name: Optional[str] = None
     press_code: Optional[str] = None
     is_revisioned: Optional[bool] = None
+    expected_completion_date: Optional[date] = None
+    description: Optional[str] = None
 
 # ---- DieComponent ----
 
@@ -185,6 +191,7 @@ class DieRead(DieBase):
     created_at: datetime
     updated_at: datetime
     die_type_ref: Optional[DieTypeRef] = None
+    expected_completion_date: Optional[date] = None
 
     files: List["FileRead"] = []
     components: List["DieComponentRead"] = []
@@ -474,6 +481,8 @@ def create_die(
             customer_name=p.customer_name,
             press_code=p.press_code,
             is_revisioned=p.is_revisioned,
+            expected_completion_date=p.expected_completion_date,
+            description=p.description,
         )
         db.add(die)
         db.flush()  # die.id lazım

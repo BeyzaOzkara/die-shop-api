@@ -8,6 +8,7 @@ from sqlalchemy import (
     String,
     Boolean,
     Text,
+    Date,
     DateTime,
     Enum as SAEnum,
     Numeric,
@@ -326,6 +327,8 @@ class Die(Base):
     press_code = Column(String, nullable=False)
 
     is_revisioned = Column(Boolean, nullable=False, default=False)
+    expected_completion_date = Column(Date, nullable=True)  # Ön Görülen Termin
+    description = Column(Text, nullable=True)  # Açıklama
     # revision_code = Column(String, nullable=True)   # örn: "R1", "Rev-2"
     # revision_note = Column(String, nullable=True)   # opsiyonel açıklama
 
