@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import exists, and_
 from pydantic import BaseModel, ConfigDict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from sqlalchemy import asc
 
 from ..database import get_db
@@ -109,6 +109,8 @@ class DieNested(BaseModel):
     total_package_length_mm: float
     die_type_id: int
     die_type: Optional[DieTypeNested] = None  # NEW
+    description: Optional[str] = None
+    expected_completion_date: Optional[date] = None
 
     files: List[FileRead] = []
 

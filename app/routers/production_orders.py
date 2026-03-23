@@ -4,7 +4,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 from pydantic import BaseModel, ConfigDict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 
 from ..database import get_db
 from ..models import (
@@ -46,6 +46,8 @@ class DieNested(BaseModel):
     die_diameter_mm: float
     total_package_length_mm: float
     die_type_id: int
+    description: Optional[str] = None
+    expected_completion_date: Optional[date] = None
     
     files: List[FileRead] = []
 
