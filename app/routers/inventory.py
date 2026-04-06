@@ -218,6 +218,11 @@ class StockMovementRead(StockMovementBase):
 
 StockMovementRead.model_rebuild()
 
+class StockMovementPagedRead(BaseModel):
+    items: List[StockMovementRead]
+    total: int
+
+
 # =========================
 # Work Centers
 # =========================
@@ -607,11 +612,21 @@ def create_stock_movement(payload: StockMovementCreate, db: Session = Depends(ge
     db.refresh(movement)
     return movement
 
-@router.get("/stock-movements", response_model=List[StockMovementRead])
-def list_stock_movements(db: Session = Depends(get_db)):
-    return (
-        db.query(StockMovement)
-        .options(
+# @router.get("/stock-movements", response_model=List[StockMovementRead])
+# def list_stock_movements(db: Session = Depends(get_db)):
+#     return (
+#         db.query(StockMovement)
+#         .options(
+@router.get("/stock-movements", response_model=StockMovementPagedRead)
+def list_stock_movements(
+    skip: int = 0,
+    limit: int = 30,
+    search: Optional[str] = None,
+    date_from: Optional[datetime] = None,
+    date_to: Optional[datetime] = None,
+    db: Session = Depends(get_db),
+):
+    query = db.query(StockMovement).options(
             joinedload(StockMovement.lot).joinedload(Lot.stock_item),
             joinedload(StockMovement.lot).joinedload(Lot.supplier_ref),
             joinedload(StockMovement.work_order)
@@ -621,5 +636,34 @@ def list_stock_movements(db: Session = Depends(get_db)):
                 .joinedload(WorkOrder.die_component)
                 .joinedload(DieComponent.component_type),
         )
-        .all()
-    )
+
+    if search and search.strip():
+        s = f"%{search.strip()}%"
+        # Join as needed for filtering
+        query = query.join(StockMovement.lot).outerjoin(Lot.stock_item).outerjoin(StockMovement.work_order).outerjoin(WorkOrder.production_order).outerjoin(ProductionOrder.die)
+        
+        filter_conds = [
+            SteelStockItem.alloy.ilike(s),
+            Lot.certificate_number.ilike(s),
+            WorkOrder.order_number.ilike(s),
+            Die.die_number.ilike(s),
+        ]
+        
+        # Handle diameter search if numeric
+        try:
+            val = float(search.strip().replace(',', '.'))
+            filter_conds.append(SteelStockItem.diameter_mm == val)
+        except ValueError:
+            pass
+
+        query = query.filter(or_(*filter_conds))
+
+    if date_from:
+        query = query.filter(StockMovement.movement_date >= date_from)
+    if date_to:
+        query = query.filter(StockMovement.movement_date <= date_to)
+
+    total = query.count()
+    items = query.order_by(StockMovement.movement_date.desc()).offset(skip).limit(limit).all()
+
+    return {"items": items, "total": total}

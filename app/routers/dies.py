@@ -465,8 +465,8 @@ def create_die(
     for c in p.components:
         if c.package_length_mm <= 0:
             raise HTTPException(status_code=400, detail="package_length_mm must be > 0")
-        if c.theoretical_consumption_kg <= 0:
-            raise HTTPException(status_code=400, detail="theoretical_consumption_kg must be > 0")
+        # if c.theoretical_consumption_kg <= 0:
+        #     raise HTTPException(status_code=400, detail="theoretical_consumption_kg must be > 0")
 
     # 4) atomik transaction
     try:
@@ -682,8 +682,8 @@ def replace_die_components(
     for c in payload.components:
         if c.package_length_mm <= 0:
             raise HTTPException(status_code=400, detail="package_length_mm must be > 0")
-        if c.theoretical_consumption_kg <= 0:
-            raise HTTPException(status_code=400, detail="theoretical_consumption_kg must be > 0")
+        # if c.theoretical_consumption_kg <= 0:
+        #     raise HTTPException(status_code=400, detail="theoretical_consumption_kg must be > 0")
 
     try:
         # Get existing components
