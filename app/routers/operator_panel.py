@@ -175,10 +175,17 @@ def pre_start_check(
     # Check work center if already assigned
     if op.work_center_id:
         wc = db.get(WorkCenter, op.work_center_id)
-        if wc and wc.status == WorkCenterStatus.Busy:
+        # if wc and wc.status == WorkCenterStatus.Busy:
+        is_isil_islem = False
+        if op.operation_type and op.operation_type.name in ['ISIL İŞLEM TARTIM', 'ISIL İŞLEM']:
+            is_isil_islem = True
+        elif wc and wc.name in ['ISIL İŞLEM TARTIM', 'ISIL İŞLEM']:
+            is_isil_islem = True
+        if wc and wc.status == WorkCenterStatus.Busy and not is_isil_islem:
             warnings.append(f"Assigned work center '{wc.name}' is currently busy")
         elif wc and wc.status == WorkCenterStatus.UnderMaintenance:
             blockers.append(f"Assigned work center '{wc.name}' is under maintenance")
+    
     
     # Build response
     can_start = len(blockers) == 0
@@ -269,7 +276,15 @@ def start_operation(
     op.started_at = datetime.now(timezone.utc)
     
     # Mark work center busy
-    wc.status = WorkCenterStatus.Busy
+    # wc.status = WorkCenterStatus.Busy
+    is_isil_islem = False
+    if op.operation_type and op.operation_type.name in ['ISIL İŞLEM TARTIM', 'ISIL İŞLEM']:
+        is_isil_islem = True
+    elif wc.name in ['ISIL İŞLEM TARTIM', 'ISIL İŞLEM']:
+        is_isil_islem = True
+        
+    if not is_isil_islem:
+        wc.status = WorkCenterStatus.Busy
     
     # Log the action
     log_action(
@@ -514,8 +529,17 @@ def batch_start_operations(
             errors.append(f"Operation {op.id}: {str(e)}")
     
     # Mark work center busy if any started
+    # if started_ids:
+    #     wc.status = WorkCenterStatus.Busy
     if started_ids:
-        wc.status = WorkCenterStatus.Busy
+        is_isil_islem = False
+        if first_op.operation_type and first_op.operation_type.name in ['ISIL İŞLEM TARTIM', 'ISIL İŞLEM']:
+            is_isil_islem = True
+        elif wc.name in ['ISIL İŞLEM TARTIM', 'ISIL İŞLEM']:
+            is_isil_islem = True
+            
+        if not is_isil_islem:
+            wc.status = WorkCenterStatus.Busy
     
     db.commit()
     
@@ -657,7 +681,15 @@ def resume_operation(
     op.status = OperationStatus.InProgress
     wc = db.query(WorkCenter).get(op.work_center_id)
     if wc:
-        wc.status = WorkCenterStatus.Busy
+        # wc.status = WorkCenterStatus.Busy
+        is_isil_islem = False
+        if op.operation_type and op.operation_type.name in ['ISIL İŞLEM TARTIM', 'ISIL İŞLEM']:
+            is_isil_islem = True
+        elif wc.name in ['ISIL İŞLEM TARTIM', 'ISIL İŞLEM']:
+            is_isil_islem = True
+            
+        if not is_isil_islem:
+            wc.status = WorkCenterStatus.Busy
 
     log_action(
         db=db,
