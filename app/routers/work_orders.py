@@ -657,8 +657,17 @@ def update_work_order_operation(
 
             # Work center'ı meşgul yap
             wc = db.query(WorkCenter).get(op.work_center_id)
+            # if wc:
+            #     wc.status = WorkCenterStatus.Busy
             if wc:
-                wc.status = WorkCenterStatus.Busy
+                is_isil_islem = False
+                if op.operation_type and op.operation_type.name in ['ISIL İŞLEM TARTIM', 'ISIL İŞLEM']:
+                    is_isil_islem = True
+                elif wc.name in ['ISIL İŞLEM TARTIM', 'ISIL İŞLEM']:
+                    is_isil_islem = True
+                
+                if not is_isil_islem:
+                    wc.status = WorkCenterStatus.Busy
 
         elif new_status == OperationStatus.Paused:
             require_work_center()
@@ -787,7 +796,15 @@ def start_operation(
         op_row.operator_name = payload.operator_name
 
     # work center busy
-    wc.status = WorkCenterStatus.Busy
+    # wc.status = WorkCenterStatus.Busy
+    is_isil_islem = False
+    if op_row.operation_type and op_row.operation_type.name in ['ISIL İŞLEM TARTIM', 'ISIL İŞLEM']:
+        is_isil_islem = True
+    elif wc.name in ['ISIL İŞLEM TARTIM', 'ISIL İŞLEM']:
+        is_isil_islem = True
+        
+    if not is_isil_islem:
+        wc.status = WorkCenterStatus.Busy
 
     db.commit()
     db.refresh(op_row)
