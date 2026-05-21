@@ -305,10 +305,17 @@ class LotForSawRead(BaseModel):
 # WORK ORDER ENDPOINT'LERİ
 # =====================================
 
-# @router.get("/", response_model=List[WorkOrderRead])
 @router.get("/", response_model=List[WorkOrderRead], dependencies=[Depends(require_admin)])
-def list_work_orders(db: Session = Depends(get_db)):
-    rows = (
+# def list_work_orders(db: Session = Depends(get_db)):
+#     rows = (
+def list_work_orders(
+    skip: int = 0,
+    limit: int = 20,
+    status: Optional[OrderStatus] = None,
+    search: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    q = (
         db.query(WorkOrder)
         .options(
             joinedload(WorkOrder.die_component).joinedload(DieComponent.component_type),
@@ -320,8 +327,26 @@ def list_work_orders(db: Session = Depends(get_db)):
             ),
         )
         .order_by(WorkOrder.created_at.desc())
-        .all()
-    )
+        )
+
+    if status:
+        q = q.filter(WorkOrder.status == status)
+
+    if search:
+        term = f"%{search.lower()}%"
+        from sqlalchemy import or_, func as sqlfunc
+        q = q.join(WorkOrder.production_order).join(ProductionOrder.die).join(
+            WorkOrder.die_component
+        ).join(DieComponent.component_type).filter(
+            or_(
+                sqlfunc.lower(WorkOrder.order_number).like(term),
+                sqlfunc.lower(Die.die_number).like(term),
+            )
+        )
+
+    rows = q.offset(skip).limit(limit).all()
+    #     .all()
+    # )
     return rows
 
 
@@ -835,7 +860,7 @@ def start_operation(
 
     # İş emri hâlâ Waiting ise InProgress'e al
     _auto_start_work_order(db, op_row.work_order_id)
-    
+
     if payload.operator_name:
         op_row.operator_name = payload.operator_name
 
