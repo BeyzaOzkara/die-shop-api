@@ -419,6 +419,29 @@ def update_work_order(id: int, payload: WorkOrderUpdate, db: Session = Depends(g
 # Aynı app içinde ama farklı prefix kullanmak için ikinci router'ı da buradan expose edeceğiz.
 ops_router = APIRouter(prefix="/work-order-operations", tags=["Work Order Operations"])
 
+# =====================================
+# HELPER: otomatik work-order tamamlama
+# =====================================
+
+def _auto_complete_work_order(db: Session, work_order_id: int) -> None:
+    """
+    Bir work order'a ait TÜM operasyonlar Completed durumuna gelince
+    work order'ın kendisini de otomatik olarak Completed yapar.
+    """
+    wo = db.query(WorkOrder).get(work_order_id)
+    if not wo or wo.status == OrderStatus.Completed:
+        return
+
+    all_ops = (
+        db.query(WorkOrderOperation)
+        .filter(WorkOrderOperation.work_order_id == work_order_id)
+        .all()
+    )
+
+    if all_ops and all(op.status == OperationStatus.Completed for op in all_ops):
+        wo.status = OrderStatus.Completed
+        wo.completed_at = datetime.now(timezone.utc)
+
 
 class StartOperationRequest(BaseModel):
     work_center_id: int
@@ -697,6 +720,9 @@ def update_work_order_operation(
             wc = db.query(WorkCenter).get(op.work_center_id)
             if wc:
                 wc.status = WorkCenterStatus.Available
+
+            # Tüm operasyonlar bittiyse work order'ı da tamamla
+            _auto_complete_work_order(db, op.work_order_id)
 
         else:
             # Diğer statüler için sadece doğrudan ata
@@ -1089,6 +1115,9 @@ def complete_saw_operation(operation_id: int, payload: CompleteSawRequest, db: S
     wc = db.query(WorkCenter).get(op.work_center_id)
     if wc:
         wc.status = WorkCenterStatus.Available
+
+    # Tüm operasyonlar bittiyse work order'ı da tamamla
+    _auto_complete_work_order(db, op.work_order_id)
 
     db.commit()
     db.refresh(op)
