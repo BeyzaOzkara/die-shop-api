@@ -443,6 +443,18 @@ def _auto_complete_work_order(db: Session, work_order_id: int) -> None:
         wo.completed_at = datetime.now(timezone.utc)
 
 
+def _auto_start_work_order(db: Session, work_order_id: int) -> None:
+    """
+    Bir operasyon InProgress'e geçince, iş emri hâlâ Waiting ise
+    otomatik olarak InProgress'e alır ve started_at'i damgalar.
+    """
+    wo = db.query(WorkOrder).get(work_order_id)
+    if not wo or wo.status != OrderStatus.Waiting:
+        return
+    wo.status = OrderStatus.InProgress
+    wo.started_at = datetime.now(timezone.utc)
+
+
 class StartOperationRequest(BaseModel):
     work_center_id: int
     operator_name: Optional[str] = None # name değil sicil no yapalım
@@ -678,6 +690,9 @@ def update_work_order_operation(
             op.status = OperationStatus.InProgress
             op.started_at = datetime.now(timezone.utc)
 
+            # İş emri hâlâ Waiting ise InProgress'e al
+            _auto_start_work_order(db, op.work_order_id)
+
             # Work center'ı meşgul yap
             wc = db.query(WorkCenter).get(op.work_center_id)
             # if wc:
@@ -818,6 +833,9 @@ def start_operation(
     op_row.status = OperationStatus.InProgress
     op_row.started_at = datetime.now(timezone.utc)
 
+    # İş emri hâlâ Waiting ise InProgress'e al
+    _auto_start_work_order(db, op_row.work_order_id)
+    
     if payload.operator_name:
         op_row.operator_name = payload.operator_name
 
