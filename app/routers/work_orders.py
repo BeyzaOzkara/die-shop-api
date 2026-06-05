@@ -109,8 +109,13 @@ class DieNested(BaseModel):
     total_package_length_mm: float
     die_type_id: int
     die_type: Optional[DieTypeNested] = None  # NEW
+    die_type_ref: Optional[DieTypeNested] = None
     description: Optional[str] = None
     expected_completion_date: Optional[date] = None
+    customer_name: Optional[str] = None
+    figure_count: Optional[int] = None
+    press_code: Optional[str] = None
+    profile_no: Optional[str] = None
 
     files: List[FileRead] = []
 
@@ -321,7 +326,7 @@ def list_work_orders(
             joinedload(WorkOrder.die_component).joinedload(DieComponent.component_type),
             joinedload(WorkOrder.die_component).joinedload(DieComponent.stock_item),
             joinedload(WorkOrder.lot).joinedload(Lot.stock_item),
-            joinedload(WorkOrder.production_order).joinedload(ProductionOrder.die).options(                         # ✅ EKLE
+            joinedload(WorkOrder.production_order).joinedload(ProductionOrder.die).options(
                 joinedload(Die.die_type),
                 joinedload(Die.files),
             ),
