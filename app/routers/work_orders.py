@@ -293,7 +293,8 @@ class AssignOperationRequest(BaseModel):
 class LotForSawRead(BaseModel):
     id: int
     certificate_number: str
-    supplier: str
+    # supplier: str
+    supplier: Optional[str] = None
     length_mm: int
     gross_weight_kg: float
     remaining_kg: float
@@ -1013,7 +1014,8 @@ def list_available_lots_for_operation(operation_id: int, db: Session = Depends(g
 
     lots = (
         db.query(Lot)
-        .options(joinedload(Lot.stock_item))  # ✅ alloy/diameter döndürmek için
+        # .options(joinedload(Lot.stock_item))  # ✅ alloy/diameter döndürmek için
+        .options(joinedload(Lot.stock_item), joinedload(Lot.supplier_ref))  # ✅ alloy/diameter ve supplier için
         .filter(
             Lot.stock_item_id.in_(eligible_stock_item_ids),
             Lot.remaining_kg > 0
@@ -1029,10 +1031,12 @@ def list_available_lots_for_operation(operation_id: int, db: Session = Depends(g
     # ✅ response’a alloy/diameter basmak için map’leyelim
     out: List[LotForSawRead] = []
     for lot in lots:
+        supplier_name = lot.supplier or (lot.supplier_ref.name if lot.supplier_ref else None)
         out.append(LotForSawRead(
             id=lot.id,
             certificate_number=lot.certificate_number,
-            supplier=lot.supplier,
+            # supplier=lot.supplier,
+            supplier=supplier_name,
             length_mm=lot.length_mm,
             gross_weight_kg=lot.gross_weight_kg,
             remaining_kg=lot.remaining_kg,
