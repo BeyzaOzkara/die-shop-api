@@ -8,14 +8,12 @@ from datetime import datetime
 
 from ..database import get_db
 from ..models import ComponentBOM
-from ..deps import require_admin
 
 
 # router = APIRouter(prefix="/component-bom", tags=["Component BOM"])
 router = APIRouter(
     prefix="/component-bom",
     tags=["Component BOM"],
-    dependencies=[Depends(require_admin)],
 )
 
 

@@ -1,11 +1,11 @@
 # backend/routers/dies.py
-from typing import List, Optional
+from typing import List, Optional, Any
 import json
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as UploadFileField, Form
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File as UploadFileField, Form
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, distinct
-from pydantic import BaseModel, ConfigDict
-from datetime import datetime
+from sqlalchemy import func, distinct, or_
+from pydantic import BaseModel, ConfigDict, model_validator
+from datetime import datetime, date
 from ..services.file_storage import save_uploaded_file
 from ..config import settings
 from ..database import get_db
@@ -15,11 +15,10 @@ from ..models import (
     DieType,
     DieComponent,
     ComponentType,
-    SteelStockItem,
+    StockItem,
     ProductionOrder,
     OrderStatus,
 )
-from ..deps import require_admin
 
 
 router = APIRouter(prefix="/dies", tags=["Dies"])
@@ -50,17 +49,33 @@ class ComponentTypeNested(BaseModel):
 
 class StockItemNested(BaseModel):
     id: int
-    alloy: str
-    diameter_mm: int
+    alloy: Optional[str] = None
+    diameter_mm: Optional[float] = None
     description: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
+    @model_validator(mode="before")
+    @classmethod
+    def extract_attributes(cls, data: Any) -> Any:
+        if getattr(data, "attributes", None) is not None:
+            return {
+                "id": data.id,
+                "alloy": data.attributes.get("alloy"),
+                "diameter_mm": data.attributes.get("diameter_mm"),
+                "description": data.attributes.get("description"),
+            }
+        if isinstance(data, dict) and "attributes" in data and isinstance(data["attributes"], dict):
+            new_data = data.copy()
+            new_data["alloy"] = data["attributes"].get("alloy")
+            new_data["diameter_mm"] = data["attributes"].get("diameter_mm")
+            new_data["description"] = data["attributes"].get("description")
+            return new_data
+        return data
+
 
 class FileRead(BaseModel):
     id: int
-    # entity_type: str
-    # entity_id: int
     original_name: str
     storage_path: str
     mime_type: str
@@ -83,11 +98,13 @@ class DieBase(BaseModel):
     press_code: Optional[str] = None
     
     is_revisioned: bool = False
+    expected_completion_date: Optional[date] = None
+    description: Optional[str] = None
 
 
 class DieComponentBase(BaseModel):
     component_type_id: int
-    stock_item_id: int
+    stock_item_id: Optional[int] = None
     package_length_mm: float
     theoretical_consumption_kg: float
 
@@ -100,7 +117,7 @@ class DieComponentUpdate(BaseModel):
     """Schema for updating a die component. Includes optional id for existing components."""
     id: Optional[int] = None  # if provided, this is an existing component to update
     component_type_id: int
-    stock_item_id: int
+    stock_item_id: Optional[int] = None
     package_length_mm: float
     theoretical_consumption_kg: float
 
@@ -123,6 +140,8 @@ class DieCreateIn(BaseModel):
     # ... profile_no, figure_count, customer_name, press_code, is_fason
 
     is_revisioned: bool = False
+    expected_completion_date: Optional[date] = None
+    description: Optional[str] = None
 
     components: List[DieComponentCreate] = []
 
@@ -162,6 +181,8 @@ class DieUpdate(BaseModel):
     customer_name: Optional[str] = None
     press_code: Optional[str] = None
     is_revisioned: Optional[bool] = None
+    expected_completion_date: Optional[date] = None
+    description: Optional[str] = None
 
 # ---- DieComponent ----
 
@@ -187,6 +208,7 @@ class DieRead(DieBase):
     created_at: datetime
     updated_at: datetime
     die_type_ref: Optional[DieTypeRef] = None
+    expected_completion_date: Optional[date] = None
 
     files: List["FileRead"] = []
     components: List["DieComponentRead"] = []
@@ -195,33 +217,133 @@ class DieRead(DieBase):
 DieRead.model_rebuild()
 
 
+class DiePageResponse(BaseModel):
+    items: List[DieRead]
+    total: int
+
+
 # =========================
 # Die endpoints
 # =========================
 
-@router.get("/", response_model=List[DieRead])
-def list_dies(db: Session = Depends(get_db)):
+@router.get("/", response_model=DiePageResponse)
+def list_dies(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(30, ge=1, le=200),
+    search: Optional[str] = Query(None, description="Search die_number, profile_no, customer_name"),
+    status: Optional[str] = Query(None, description="DieStatus value"),
+    die_type_id: Optional[int] = Query(None),
+    is_revisioned: Optional[bool] = Query(None),
+    # Numeric range filters
+    die_diameter_mm_min: Optional[float] = Query(None, description="die_diameter_mm >= value"),
+    die_diameter_mm_max: Optional[float] = Query(None, description="die_diameter_mm <= value"),
+    total_package_length_mm_min: Optional[float] = Query(None, description="total_package_length_mm >= value"),
+    total_package_length_mm_max: Optional[float] = Query(None, description="total_package_length_mm <= value"),
+    figure_count: Optional[int] = Query(None, description="Exact match on figure_count"),
+    press_code: Optional[str] = Query(None, description="press_code ilike"),
+    date_from: Optional[date] = Query(None, description="Filter created_at >= date_from"),
+    date_to: Optional[date] = Query(None, description="Filter created_at <= date_to"),
+    db: Session = Depends(get_db),
+):
+    """Return paginated, filtered dies."""
+    q = db.query(Die)
+
+    # --- Search across die_number, profile_no, customer_name ---
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        q = q.filter(
+            or_(
+                Die.die_number.ilike(term),
+                Die.profile_no.ilike(term),
+                Die.customer_name.ilike(term),
+            )
+        )
+
+    # --- Exact / enum filters ---
+    if status:
+        try:
+            q = q.filter(Die.status == DieStatus(status))
+        except ValueError:
+            pass  # ignore unknown status values
+
+    if die_type_id is not None:
+        q = q.filter(Die.die_type_id == die_type_id)
+
+    if is_revisioned is not None:
+        q = q.filter(Die.is_revisioned == is_revisioned)
+
+    # --- Date range (inclusive) ---
+    if date_from:
+        q = q.filter(func.date(Die.created_at) >= date_from)
+    if date_to:
+        q = q.filter(func.date(Die.created_at) <= date_to)
+
+    # --- Numeric range filters ---
+    if die_diameter_mm_min is not None:
+        q = q.filter(Die.die_diameter_mm >= die_diameter_mm_min)
+    if die_diameter_mm_max is not None:
+        q = q.filter(Die.die_diameter_mm <= die_diameter_mm_max)
+    if total_package_length_mm_min is not None:
+        q = q.filter(Die.total_package_length_mm >= total_package_length_mm_min)
+    if total_package_length_mm_max is not None:
+        q = q.filter(Die.total_package_length_mm <= total_package_length_mm_max)
+
+    # --- Exact integer filter ---
+    if figure_count is not None:
+        q = q.filter(Die.figure_count == figure_count)
+
+    # --- Text filter ---
+    if press_code and press_code.strip():
+        q = q.filter(Die.press_code.ilike(f"%{press_code.strip()}%"))
+
+    # --- Count before pagination ---
+    total: int = q.with_entities(func.count(Die.id)).scalar() or 0
+
+    # --- Fetch page ---
     dies = (
-        db.query(Die)
-        # .options(joinedload(Die.die_type), joinedload(Die.files))
-        .options(
+        q.options(
             joinedload(Die.die_type),
             joinedload(Die.files),
             joinedload(Die.components).joinedload(DieComponent.component_type),
             joinedload(Die.components).joinedload(DieComponent.stock_item),
         )
         .order_by(Die.created_at.desc())
+        .offset(skip)
+        .limit(limit)
         .all()
     )
-    result: List[DieRead] = []
+
+    items: List[DieRead] = []
     for die in dies:
         die_dict = DieRead.model_validate(die).model_dump()
-        if die.die_type:
-            die_dict["die_type_ref"] = DieTypeRef.model_validate(die.die_type)
-        else:
-            die_dict["die_type_ref"] = None
-        result.append(DieRead.model_validate(die_dict))
-    return result
+        die_dict["die_type_ref"] = DieTypeRef.model_validate(die.die_type) if die.die_type else None
+        items.append(DieRead.model_validate(die_dict))
+ 
+    return DiePageResponse(items=items, total=total)
+
+# @router.get("/", response_model=List[DieRead])
+# def list_dies(db: Session = Depends(get_db)):
+#     dies = (
+#         db.query(Die)
+#         # .options(joinedload(Die.die_type), joinedload(Die.files))
+#         .options(
+#             joinedload(Die.die_type),
+#             joinedload(Die.files),
+#             joinedload(Die.components).joinedload(DieComponent.component_type),
+#             joinedload(Die.components).joinedload(DieComponent.stock_item),
+#         )
+#         .order_by(Die.created_at.desc())
+#         .all()
+#     )
+#     result: List[DieRead] = []
+#     for die in dies:
+#         die_dict = DieRead.model_validate(die).model_dump()
+#         if die.die_type:
+#             die_dict["die_type_ref"] = DieTypeRef.model_validate(die.die_type)
+#         else:
+#             die_dict["die_type_ref"] = None
+#         result.append(DieRead.model_validate(die_dict))
+#     return result
 
 @router.get("/stats", response_model=DieStatsResponse)
 def get_die_stats(db: Session = Depends(get_db)):
@@ -291,7 +413,7 @@ def get_die(die_id: int, db: Session = Depends(get_db)):
         die_dict["die_type_ref"] = None
     return DieRead.model_validate(die_dict)
 
-@router.post("/", response_model=DieRead, status_code=201, dependencies=[Depends(require_admin)])
+@router.post("/", response_model=DieRead, status_code=201)
 def create_die(
     payload: str = Form(...),
     design_files: List[UploadFile] = UploadFileField([]),
@@ -345,23 +467,21 @@ def create_die(
         raise HTTPException(status_code=400, detail=f"Invalid component_type_id(s): {missing_ct}")
 
     # existing_stock_items = {
-    #     si.id for si in db.query(SteelStockItem.id).filter(SteelStockItem.id.in_(stock_item_ids)).all()
+    #     si.id for si in db.query(StockItem.id).filter(StockItem.id.in_(stock_item_ids)).all()
     # }
     existing_stock_items = set(
-        r[0] for r in db.query(SteelStockItem.id)
-        .filter(SteelStockItem.id.in_(stock_item_ids))
+        r[0] for r in db.query(StockItem.id)
+        .filter(StockItem.id.in_(stock_item_ids))
         .all()
     )
     missing_si = [sid for sid in stock_item_ids if sid not in existing_stock_items]
     if missing_si:
         raise HTTPException(status_code=400, detail=f"Invalid stock_item_id(s): {missing_si}")
 
-    # numeric sanity checks (NaN burada gelmez çünkü pydantic parse ediyor ama 0 kontrolü önemli)
+    # numeric sanity checks
     for c in p.components:
         if c.package_length_mm <= 0:
             raise HTTPException(status_code=400, detail="package_length_mm must be > 0")
-        if c.theoretical_consumption_kg <= 0:
-            raise HTTPException(status_code=400, detail="theoretical_consumption_kg must be > 0")
 
     # 4) atomik transaction
     try:
@@ -376,6 +496,8 @@ def create_die(
             customer_name=p.customer_name,
             press_code=p.press_code,
             is_revisioned=p.is_revisioned,
+            expected_completion_date=p.expected_completion_date,
+            description=p.description,
         )
         db.add(die)
         db.flush()  # die.id lazım
@@ -421,7 +543,7 @@ def create_die(
     return DieRead.model_validate(die_dict)
 
 
-@router.patch("/{die_id}", response_model=DieRead, dependencies=[Depends(require_admin)])
+@router.patch("/{die_id}", response_model=DieRead)
 def update_die(
     die_id: int,
     payload: DieUpdate,
@@ -481,7 +603,7 @@ def list_die_components(die_id: int, db: Session = Depends(get_db)):
 
 
 # @router.post("/{die_id}/components", response_model=DieComponentRead, status_code=201)
-@router.post("/{die_id}/components", response_model=DieComponentRead, status_code=201, dependencies=[Depends(require_admin)])
+@router.post("/{die_id}/components", response_model=DieComponentRead, status_code=201)
 def create_die_component(
     die_id: int,
     payload: DieComponentCreate,
@@ -527,7 +649,7 @@ def create_die_component(
     return comp
 
 
-@router.put("/{die_id}/components", response_model=List[DieComponentRead], dependencies=[Depends(require_admin)])
+@router.put("/{die_id}/components", response_model=List[DieComponentRead])
 def replace_die_components(
     die_id: int,
     payload: DieComponentsReplace,
@@ -563,8 +685,8 @@ def replace_die_components(
     stock_item_ids = [c.stock_item_id for c in payload.components]
     if stock_item_ids:
         existing_stock_items = set(
-            r[0] for r in db.query(SteelStockItem.id)
-            .filter(SteelStockItem.id.in_(stock_item_ids))
+            r[0] for r in db.query(StockItem.id)
+            .filter(StockItem.id.in_(stock_item_ids))
             .all()
         )
         missing_si = [sid for sid in stock_item_ids if sid not in existing_stock_items]
@@ -575,8 +697,6 @@ def replace_die_components(
     for c in payload.components:
         if c.package_length_mm <= 0:
             raise HTTPException(status_code=400, detail="package_length_mm must be > 0")
-        if c.theoretical_consumption_kg <= 0:
-            raise HTTPException(status_code=400, detail="theoretical_consumption_kg must be > 0")
 
     try:
         # Get existing components
@@ -633,7 +753,7 @@ def replace_die_components(
     return components
 
 
-@router.post("/{die_id}/files", response_model=DieRead, status_code=201, dependencies=[Depends(require_admin)])
+@router.post("/{die_id}/files", response_model=DieRead, status_code=201)
 def add_die_files(
     die_id: int,
     files: List[UploadFile] = UploadFileField(...),  # form field name: "files"
@@ -681,7 +801,7 @@ def add_die_files(
     die_dict["die_type_ref"] = DieTypeRef.model_validate(die.die_type) if die.die_type else None
     return DieRead.model_validate(die_dict)
 
-@router.delete("/{die_id}/files/{file_id}", status_code=204, dependencies=[Depends(require_admin)])
+@router.delete("/{die_id}/files/{file_id}", status_code=204)
 def delete_die_file(
     die_id: int,
     file_id: int,
@@ -715,7 +835,7 @@ def delete_die_file(
     return
 
 
-@router.delete("/{die_id}", status_code=204, dependencies=[Depends(require_admin)])
+@router.delete("/{die_id}", status_code=204)
 def delete_die(
     die_id: int,
     db: Session = Depends(get_db),

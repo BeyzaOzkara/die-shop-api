@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session, joinedload
 
 from ..database import get_db
 from ..models import Operator, WorkCenter, WorkCenterStatus, OperatorRole
-from ..deps import require_admin
 
 
 router = APIRouter(prefix="/operators", tags=["Operators"])
@@ -92,7 +91,7 @@ def get_operator_with_centers(db: Session, operator_id: int) -> Operator:
 # ---------- Endpoint’ler ----------
 
 # @router.get("/", response_model=List[OperatorRead])
-@router.get("/", response_model=List[OperatorRead], dependencies=[Depends(require_admin)])
+@router.get("/", response_model=List[OperatorRead])
 def list_operators(db: Session = Depends(get_db)):
     rows = (
         db.query(Operator)
@@ -104,13 +103,13 @@ def list_operators(db: Session = Depends(get_db)):
 
 
 # @router.get("/{id}", response_model=OperatorRead)
-@router.get("/{id}", response_model=OperatorRead, dependencies=[Depends(require_admin)])
+@router.get("/{id}", response_model=OperatorRead)
 def get_operator(id: int, db: Session = Depends(get_db)):
     return get_operator_with_centers(db, id)
 
 
 # @router.post("/", response_model=OperatorRead, status_code=201)
-@router.post("/", response_model=OperatorRead, status_code=201, dependencies=[Depends(require_admin)])
+@router.post("/", response_model=OperatorRead, status_code=201)
 def create_operator(payload: OperatorCreate, db: Session = Depends(get_db)):
     existing = (
         db.query(Operator)
@@ -145,7 +144,7 @@ def create_operator(payload: OperatorCreate, db: Session = Depends(get_db)):
 
 
 # @router.patch("/{id}", response_model=OperatorRead)
-@router.patch("/{id}", response_model=OperatorRead, dependencies=[Depends(require_admin)])
+@router.patch("/{id}", response_model=OperatorRead)
 def update_operator(id: int, payload: OperatorUpdate, db: Session = Depends(get_db)):
     op = db.query(Operator).get(id)
     if not op:
@@ -172,7 +171,7 @@ def update_operator(id: int, payload: OperatorUpdate, db: Session = Depends(get_
 
 
 # @router.delete("/{id}", status_code=204)
-@router.delete("/{id}", status_code=204, dependencies=[Depends(require_admin)])
+@router.delete("/{id}", status_code=204)
 def delete_operator(id: int, db: Session = Depends(get_db)):
     # op = db.query(Operator).get(id)
     op = db.get(Operator, id)

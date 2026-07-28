@@ -27,6 +27,8 @@ from ..models import (
     DomainActionLog,
 )
 from ..services.action_logger import log_action, snapshot_operation
+from ..models import StockItem, ItemType
+from .work_orders import _auto_complete_work_order
 
 router = APIRouter(prefix="/operator-panel", tags=["Operator Panel"])
 
@@ -81,6 +83,8 @@ class StopOperationRequest(BaseModel):
     reason_code: str  # "COMPLETED", "LUNCH_BREAK", "MACHINE_FAILURE", "QUALITY_ISSUE", "MATERIAL_SHORTAGE", etc.
     next_status: OperationStatus  # Completed, Paused, Cancelled
     notes: Optional[str] = None
+    actual_cut_length_mm: Optional[float] = None
+    actual_cut_weight_kg: Optional[float] = None
 
 
 class StopOperationResponse(BaseModel):
@@ -143,6 +147,67 @@ def check_previous_operations_completed(db: Session, operation: WorkOrderOperati
     return len(not_completed) == 0, len(not_completed)
 
 
+def handle_operation_completion(
+    db: Session,
+    op: WorkOrderOperation,
+    actual_cut_length_mm: Optional[float] = None,
+    actual_cut_weight_kg: Optional[float] = None
+):
+    """
+    Handles special logic when an operation completes.
+    Specifically: Standalone Pre-Machining Orders that are a cutting operation (Testere).
+    """
+    wo = op.work_order
+    # If standalone PM order AND source is RAW_MATERIAL AND operation is cutting type
+    if wo and wo.is_pre_machining and op.operation_type and op.operation_type.is_cutting:
+        # Check source material type
+        source_item = db.get(StockItem, wo.stock_item_id)
+        if source_item and source_item.item_type == ItemType.RAW_MATERIAL:
+            weight_to_cut = actual_cut_weight_kg or wo.actual_consumption_kg
+            if not weight_to_cut:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Kesim (Testere) operasyonu tamamlanırken tüketilen ağırlık bilinmelidir."
+                )
+            
+            length_to_cut = actual_cut_length_mm or wo.planned_cut_length_mm
+            
+            from ..services.inventory_service import cut_steel_generate_wip
+            from ..schemas.inventory import CutSteelRequest
+            
+            child_attrs = {
+                "length_mm": float(length_to_cut) if length_to_cut else None,
+                "diameter_mm": float(source_item.attributes.get("diameter_mm")) if source_item.attributes and source_item.attributes.get("diameter_mm") else None,
+                "alloy": source_item.attributes.get("alloy") if source_item.attributes else None,
+            }
+            
+            if wo.is_pre_machining:
+                child_attrs["Sipariş Türü"] = "Ön İşleme"
+            elif wo.production_order and wo.production_order.die:
+                child_attrs["Kalıp"] = wo.production_order.die.die_number
+                if wo.die_component and wo.die_component.component_type:
+                    child_attrs["Bileşen"] = wo.die_component.component_type.name
+            
+            # Generate child WIP block
+            cut_req = CutSteelRequest(
+                parent_stock_item_id=source_item.id,
+                cut_quantity=weight_to_cut, # Deduct weight from parent
+                child_attributes=child_attrs,
+                work_order_id=wo.id,
+                location_id=source_item.location_id
+            )
+            
+            res = cut_steel_generate_wip(db, cut_req)
+            new_wip = res.child
+            
+            # Update PM order fields
+            wo.actual_consumption_kg = weight_to_cut
+            wo.stock_item_id = new_wip.id # Point to the new WIP block
+            
+            # If there are any subsequent operations for this PM order, they naturally belong to this WIP block now
+            db.add(wo)
+
+
 # =========================
 # Endpoints
 # =========================
@@ -175,7 +240,13 @@ def pre_start_check(
     # Check work center if already assigned
     if op.work_center_id:
         wc = db.get(WorkCenter, op.work_center_id)
-        if wc and wc.status == WorkCenterStatus.Busy:
+        is_isil_islem = False
+        if op.operation_type and op.operation_type.name in ['ISIL İŞLEM TARTIM', 'ISIL İŞLEM']:
+            is_isil_islem = True
+        elif wc and wc.name in ['ISIL İŞLEM TARTIM', 'ISIL İŞLEM']:
+            is_isil_islem = True
+
+        if wc and wc.status == WorkCenterStatus.Busy and not is_isil_islem:
             warnings.append(f"Assigned work center '{wc.name}' is currently busy")
         elif wc and wc.status == WorkCenterStatus.UnderMaintenance:
             blockers.append(f"Assigned work center '{wc.name}' is under maintenance")
@@ -268,8 +339,34 @@ def start_operation(
     op.status = OperationStatus.InProgress
     op.started_at = datetime.now(timezone.utc)
     
+    # Move WIP stock item to WorkCenter's location
+    work_order = op.work_order
+    if work_order and work_order.stock_item_id:
+        from ..models import Location, StockItem, StockTransaction, TransactionType
+        wc_location = db.query(Location).filter(Location.work_center_id == wc.id).first()
+        if wc_location:
+            wip_item = db.query(StockItem).get(work_order.stock_item_id)
+            if wip_item and wip_item.location_id != wc_location.id:
+                wip_item.location_id = wc_location.id
+                txn = StockTransaction(
+                    stock_item_id=wip_item.id,
+                    transaction_type=TransactionType.LOCATION_MOVE,
+                    quantity_change=0,
+                    quantity_after=wip_item.quantity,
+                    notes=f"Moved to work center {wc.name}",
+                    work_order_id=op.work_order_id
+                )
+                db.add(txn)
+    
     # Mark work center busy
-    wc.status = WorkCenterStatus.Busy
+    is_isil_islem = False
+    if op.operation_type and op.operation_type.name in ['ISIL İŞLEM TARTIM', 'ISIL İŞLEM']:
+        is_isil_islem = True
+    elif wc.name in ['ISIL İŞLEM TARTIM', 'ISIL İŞLEM']:
+        is_isil_islem = True
+        
+    if not is_isil_islem:
+        wc.status = WorkCenterStatus.Busy
     
     # Log the action
     log_action(
@@ -337,6 +434,16 @@ def stop_operation(
     op.status = payload.next_status
     if payload.next_status in (OperationStatus.Completed, OperationStatus.Cancelled):
         op.completed_at = datetime.now(timezone.utc)
+        
+    if payload.next_status == OperationStatus.Completed:
+        handle_operation_completion(
+            db, op,
+            actual_cut_length_mm=payload.actual_cut_length_mm,
+            actual_cut_weight_kg=payload.actual_cut_weight_kg
+        )
+        
+        # Check and complete work order if this was the last operation
+        _auto_complete_work_order(db, op.work_order_id)
     
     # Free up work center
     wc = db.get(WorkCenter, op.work_center_id)
@@ -516,7 +623,14 @@ def batch_start_operations(
     
     # Mark work center busy if any started
     if started_ids:
-        wc.status = WorkCenterStatus.Busy
+        is_isil_islem = False
+        if first_op.operation_type and first_op.operation_type.name in ['ISIL İŞLEM TARTIM', 'ISIL İŞLEM']:
+            is_isil_islem = True
+        elif wc.name in ['ISIL İŞLEM TARTIM', 'ISIL İŞLEM']:
+            is_isil_islem = True
+            
+        if not is_isil_islem:
+            wc.status = WorkCenterStatus.Busy
     
     db.commit()
     
@@ -536,6 +650,8 @@ class SimpleOperatorActionRequest(BaseModel):
     operator_id: int
     reason_code: Optional[str] = None
     notes: Optional[str] = None
+    actual_cut_length_mm: Optional[float] = None
+    actual_cut_weight_kg: Optional[float] = None
 
 
 class OperatorActionResponse(BaseModel): 
@@ -658,7 +774,14 @@ def resume_operation(
     op.status = OperationStatus.InProgress
     wc = db.query(WorkCenter).get(op.work_center_id)
     if wc:
-        wc.status = WorkCenterStatus.Busy
+        is_isil_islem = False
+        if op.operation_type and op.operation_type.name in ['ISIL İŞLEM TARTIM', 'ISIL İŞLEM']:
+            is_isil_islem = True
+        elif wc.name in ['ISIL İŞLEM TARTIM', 'ISIL İŞLEM']:
+            is_isil_islem = True
+            
+        if not is_isil_islem:
+            wc.status = WorkCenterStatus.Busy
 
     log_action(
         db=db,
@@ -719,6 +842,15 @@ def complete_operation(
     before = snapshot_operation(op)
     op.status = OperationStatus.Completed
     op.completed_at = datetime.now(timezone.utc)
+
+    handle_operation_completion(
+        db, op,
+        actual_cut_length_mm=payload.actual_cut_length_mm,
+        actual_cut_weight_kg=payload.actual_cut_weight_kg
+    )
+
+    # Check and complete work order if this was the last operation
+    _auto_complete_work_order(db, op.work_order_id)
 
     # Free work center
     if op.work_center_id:

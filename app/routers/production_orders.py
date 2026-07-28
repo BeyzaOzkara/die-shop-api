@@ -4,7 +4,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 from pydantic import BaseModel, ConfigDict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 
 from ..database import get_db
 from ..models import (
@@ -19,7 +19,6 @@ from ..models import (
     DieStatus,
 )
 from ..order_number_helper import generate_production_order_number, generate_work_order_number
-from ..deps import require_admin
 
 
 router = APIRouter(prefix="/production-orders", tags=["Production Orders"])
@@ -46,14 +45,16 @@ class DieNested(BaseModel):
     die_diameter_mm: float
     total_package_length_mm: float
     die_type_id: int
-    
+    description: Optional[str] = None
+    expected_completion_date: Optional[date] = None
+
     files: List[FileRead] = []
 
     model_config = ConfigDict(from_attributes=True)
 
 
 class ProductionOrderBase(BaseModel):
-    die_id: int
+    die_id: Optional[int] = None
     # order_number: str
     status: OrderStatus = OrderStatus.Waiting
 
@@ -127,6 +128,7 @@ class ComponentPreview(BaseModel):
     package_length_mm: float
     theoretical_consumption_kg: float
     bom_operations: List[BOMOperationPreview] = []
+    completed_operations_on_stock: List[str] = []
 
 
 class WorkOrderPreviewResponse(BaseModel):
@@ -175,7 +177,7 @@ def get_production_order(id: int, db: Session = Depends(get_db)):
 # status = 'Waiting'
 # iş emri/operasyon üretme
 # @router.post("/", response_model=ProductionOrderRead, status_code=201)
-@router.post("/", response_model=ProductionOrderRead, status_code=201, dependencies=[Depends(require_admin)])
+@router.post("/", response_model=ProductionOrderRead, status_code=201)
 def create_production_order(
     payload: ProductionOrderCreate,
     db: Session = Depends(get_db),
@@ -208,7 +210,7 @@ def create_production_order(
     return po
 
 
-@router.post("/{id}/preview-work-orders", response_model=WorkOrderPreviewResponse, dependencies=[Depends(require_admin)])
+@router.post("/{id}/preview-work-orders", response_model=WorkOrderPreviewResponse)
 def preview_work_orders(
     id: int,
     db: Session = Depends(get_db),
@@ -265,6 +267,18 @@ def preview_work_orders(
             ))
             total_operations += 1
 
+        completed_ops_on_stock = []
+        if component.stock_item_id:
+            # Find work orders that point to this stock item and get completed operations
+            # Typically, this would be a pre-machining order that produced this WIP
+            pm_wos = db.query(WorkOrder).filter(
+                WorkOrder.stock_item_id == component.stock_item_id
+            ).all()
+            for w in pm_wos:
+                for op in w.operations:
+                    if op.status == OperationStatus.Completed and op.operation_type:
+                        completed_ops_on_stock.append(op.operation_type.name)
+
         components_preview.append(ComponentPreview(
             component_id=component.id,
             component_type=ComponentTypeNested(
@@ -275,6 +289,7 @@ def preview_work_orders(
             package_length_mm=float(component.package_length_mm),
             theoretical_consumption_kg=float(component.theoretical_consumption_kg),
             bom_operations=bom_operations,
+            completed_operations_on_stock=list(set(completed_ops_on_stock))
         ))
 
     return WorkOrderPreviewResponse(
@@ -287,7 +302,7 @@ def preview_work_orders(
 
 
 # @router.post("/{id}/generate-work-orders", response_model=ProductionOrderRead, status_code=201)
-@router.post("/{id}/generate-work-orders", response_model=ProductionOrderRead, status_code=201, dependencies=[Depends(require_admin)])
+@router.post("/{id}/generate-work-orders", response_model=ProductionOrderRead, status_code=201)
 def generate_work_orders_for_production_order(
     id: int,
     payload: Optional[GenerateWorkOrdersRequest] = None,
@@ -394,7 +409,7 @@ def generate_work_orders_for_production_order(
 
 
 # @router.patch("/{id}", response_model=ProductionOrderRead)
-@router.patch("/{id}", response_model=ProductionOrderRead, dependencies=[Depends(require_admin)])
+@router.patch("/{id}", response_model=ProductionOrderRead)
 def update_production_order(
     id: int,
     payload: ProductionOrderUpdate,

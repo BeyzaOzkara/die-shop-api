@@ -8,7 +8,6 @@ from datetime import datetime
 
 from ..database import get_db
 from ..models import OperationType
-from ..deps import require_admin
 
 router = APIRouter(prefix="/operation-types", tags=["Operation Types"])
 
@@ -22,6 +21,7 @@ class OperationTypeBase(BaseModel):
     name: str
     description: Optional[str] = None
     is_active: bool = True
+    is_cutting: bool = False
 
 
 class OperationTypeCreate(OperationTypeBase):
@@ -58,7 +58,7 @@ def list_operation_types(
 
 
 # @router.post("", response_model=OperationTypeRead, status_code=201)
-@router.post("", response_model=OperationTypeRead, status_code=201, dependencies=[Depends(require_admin)])
+@router.post("", response_model=OperationTypeRead, status_code=201)
 def create_operation_type(payload: OperationTypeCreate, db: Session = Depends(get_db)):
     existing = db.query(OperationType).filter(OperationType.code == payload.code).first()
     if existing:
@@ -72,7 +72,7 @@ def create_operation_type(payload: OperationTypeCreate, db: Session = Depends(ge
 
 
 # @router.patch("/{id}", response_model=OperationTypeRead)
-@router.patch("/{id}", response_model=OperationTypeRead, dependencies=[Depends(require_admin)])
+@router.patch("/{id}", response_model=OperationTypeRead)
 def update_operation_type(id: int, payload: OperationTypeUpdate, db: Session = Depends(get_db)):
     ot = db.query(OperationType).get(id)
     if not ot:
@@ -105,7 +105,7 @@ def update_operation_type(id: int, payload: OperationTypeUpdate, db: Session = D
 
 
 # @router.delete("/{id}", status_code=204)
-@router.delete("/{id}", status_code=204, dependencies=[Depends(require_admin)])
+@router.delete("/{id}", status_code=204)
 def delete_operation_type(id: int, db: Session = Depends(get_db)):
     ot = db.query(OperationType).get(id)
     if not ot:

@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import exists, and_
 from pydantic import BaseModel, ConfigDict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from sqlalchemy import asc
 
 from ..database import get_db
@@ -21,10 +21,8 @@ from ..models import (
     ProductionOrder,
     Die,
     Operator,
-    StockMovement,
-    SteelStockItem,
+    StockItem,
 )
-from ..deps import require_admin
 
 router = APIRouter(prefix="/work-orders", tags=["Work Orders"])
 
@@ -53,11 +51,10 @@ class ComponentTypeNested(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class SteelStockItemNested(BaseModel):
+class StockItemNested(BaseModel):
     id: int
-    alloy: str
-    diameter_mm: int
-    description: Optional[str] = None
+    item_type: Optional[str] = None
+    attributes: Optional[dict] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -71,23 +68,17 @@ class DieComponentNested(BaseModel):
     theoretical_consumption_kg: float
     created_at: datetime
     component_type: Optional[ComponentTypeNested] = None
-    stock_item: Optional[SteelStockItemNested] = None
+    stock_item: Optional[StockItemNested] = None
 
     model_config = ConfigDict(from_attributes=True)
 
 
 class LotNested(BaseModel):
     id: int
-    stock_item_id: int
-    certificate_number: str
-    supplier: str
-    length_mm: int
-    gross_weight_kg: float
-    remaining_kg: float
-    certificate_file_url: Optional[str] = None
-    received_date: datetime
+    lot_number: Optional[str] = None
+    certificate_number: Optional[str] = None
+    receive_date: Optional[datetime] = None
     created_at: datetime
-    stock_item: Optional[SteelStockItemNested] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -109,6 +100,13 @@ class DieNested(BaseModel):
     total_package_length_mm: float
     die_type_id: int
     die_type: Optional[DieTypeNested] = None  # NEW
+    die_type_ref: Optional[DieTypeNested] = None
+    description: Optional[str] = None
+    expected_completion_date: Optional[date] = None
+    customer_name: Optional[str] = None
+    figure_count: Optional[int] = None
+    press_code: Optional[str] = None
+    profile_no: Optional[str] = None
 
     files: List[FileRead] = []
 
@@ -117,7 +115,7 @@ class DieNested(BaseModel):
 
 class ProductionOrderNested(BaseModel):
     id: int
-    die_id: int
+    die_id: Optional[int] = None
     order_number: str
     status: OrderStatus
     started_at: Optional[datetime] = None
@@ -133,12 +131,16 @@ class ProductionOrderNested(BaseModel):
 # =====================================
 
 class WorkOrderBase(BaseModel):
-    production_order_id: int
-    die_component_id: int
-    order_number: str
+    production_order_id: Optional[int] = None
+    die_component_id: Optional[int] = None
+    order_number: Optional[str] = None
+    pre_machining_order_number: Optional[str] = None
+    stock_item_id: Optional[int] = None
     status: OrderStatus = OrderStatus.Waiting
     theoretical_consumption_kg: float
     actual_consumption_kg: Optional[float] = None
+    planned_cut_length_mm: Optional[float] = None
+    planned_cut_weight_kg: Optional[float] = None
     lot_id: Optional[int] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
@@ -170,6 +172,7 @@ class WorkOrderRead(WorkOrderBase):
     die_component: Optional[DieComponentNested] = None
     lot: Optional[LotNested] = None
     production_order: Optional[ProductionOrderNested] = None
+    stock_item: Optional[StockItemNested] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -197,24 +200,29 @@ class OperationTypeNested(BaseModel):
     name: str
     description: Optional[str] = None
     is_active: bool = True
+    is_cutting: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
 
 class WorkOrderNestedForOperation(BaseModel):
     id: int
-    production_order_id: int
-    die_component_id: int
-    order_number: str
+    production_order_id: Optional[int] = None
+    die_component_id: Optional[int] = None
+    order_number: Optional[str] = None
+    pre_machining_order_number: Optional[str] = None
     status: OrderStatus
     theoretical_consumption_kg: float
     actual_consumption_kg: Optional[float] = None
+    planned_cut_length_mm: Optional[float] = None
+    planned_cut_weight_kg: Optional[float] = None
     lot_id: Optional[int] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     created_at: datetime
     die_component: Optional[DieComponentNested] = None
     production_order: Optional[ProductionOrderNested] = None
+    stock_item: Optional[StockItemNested] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -285,14 +293,12 @@ class AssignOperationRequest(BaseModel):
 
 class LotForSawRead(BaseModel):
     id: int
-    certificate_number: str
-    supplier: str
-    length_mm: int
-    gross_weight_kg: float
+    certificate_number: Optional[str] = None
+    supplier: Optional[str] = None
+    length_mm: Optional[int] = None
+    gross_weight_kg: Optional[float] = None
     remaining_kg: float
-    received_date: datetime
-    
-    # ✅ yeni (opsiyonel ama öneririm)
+    received_date: Optional[datetime] = None
     stock_item_id: int
     alloy: Optional[str] = None
     diameter_mm: Optional[int] = None
@@ -303,28 +309,54 @@ class LotForSawRead(BaseModel):
 # WORK ORDER ENDPOINT'LERİ
 # =====================================
 
-# @router.get("/", response_model=List[WorkOrderRead])
-@router.get("/", response_model=List[WorkOrderRead], dependencies=[Depends(require_admin)])
-def list_work_orders(db: Session = Depends(get_db)):
-    rows = (
+@router.get("/", response_model=List[WorkOrderRead])
+# def list_work_orders(db: Session = Depends(get_db)):
+#     rows = (
+def list_work_orders(
+    skip: int = 0,
+    limit: int = 20,
+    status: Optional[OrderStatus] = None,
+    search: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    q = (
         db.query(WorkOrder)
         .options(
             joinedload(WorkOrder.die_component).joinedload(DieComponent.component_type),
             joinedload(WorkOrder.die_component).joinedload(DieComponent.stock_item),
-            joinedload(WorkOrder.lot).joinedload(Lot.stock_item),
-            joinedload(WorkOrder.production_order).joinedload(ProductionOrder.die).options(                         # ✅ EKLE
+            joinedload(WorkOrder.stock_item),
+            joinedload(WorkOrder.lot),
+            joinedload(WorkOrder.production_order).joinedload(ProductionOrder.die).options(
                 joinedload(Die.die_type),
                 joinedload(Die.files),
             ),
         )
         .order_by(WorkOrder.created_at.desc())
-        .all()
-    )
+        )
+
+    if status:
+        q = q.filter(WorkOrder.status == status)
+
+    if search:
+        term = f"%{search.lower()}%"
+        from sqlalchemy import or_, func as sqlfunc
+        q = q.join(WorkOrder.production_order).join(ProductionOrder.die).join(
+            WorkOrder.die_component
+        ).join(DieComponent.component_type).filter(
+            or_(
+                sqlfunc.lower(WorkOrder.order_number).like(term),
+                sqlfunc.lower(Die.die_number).like(term),
+            )
+        )
+
+    rows = q.offset(skip).limit(limit).all()
+    #     .all()
+    # )
     return rows
 
 
 # @router.get("/{id}", response_model=WorkOrderRead)
-@router.get("/{id}", response_model=WorkOrderRead, dependencies=[Depends(require_admin)])
+@router.get("/{id}", response_model=WorkOrderRead)
 def get_work_order(id: int, db: Session = Depends(get_db)):
     wo = (
         db.query(WorkOrder)
@@ -346,7 +378,7 @@ def get_work_order(id: int, db: Session = Depends(get_db)):
 
 
 # @router.post("/", response_model=WorkOrderRead, status_code=201)
-@router.post("/", response_model=WorkOrderRead, status_code=201, dependencies=[Depends(require_admin)])
+@router.post("/", response_model=WorkOrderRead, status_code=201)
 def create_work_order(payload: WorkOrderCreate, db: Session = Depends(get_db)):
     existing = (
         db.query(WorkOrder)
@@ -382,7 +414,7 @@ def create_work_order(payload: WorkOrderCreate, db: Session = Depends(get_db)):
 
 
 # @router.patch("/{id}", response_model=WorkOrderRead)
-@router.patch("/{id}", response_model=WorkOrderRead, dependencies=[Depends(require_admin)])
+@router.patch("/{id}", response_model=WorkOrderRead)
 def update_work_order(id: int, payload: WorkOrderUpdate, db: Session = Depends(get_db)):
     wo = db.query(WorkOrder).get(id)
     if not wo:
@@ -416,6 +448,41 @@ def update_work_order(id: int, payload: WorkOrderUpdate, db: Session = Depends(g
 
 # Aynı app içinde ama farklı prefix kullanmak için ikinci router'ı da buradan expose edeceğiz.
 ops_router = APIRouter(prefix="/work-order-operations", tags=["Work Order Operations"])
+
+# =====================================
+# HELPER: otomatik work-order tamamlama
+# =====================================
+
+def _auto_complete_work_order(db: Session, work_order_id: int) -> None:
+    """
+    Bir work order'a ait TÜM operasyonlar Completed durumuna gelince
+    work order'ın kendisini de otomatik olarak Completed yapar.
+    """
+    wo = db.query(WorkOrder).get(work_order_id)
+    if not wo or wo.status == OrderStatus.Completed:
+        return
+
+    all_ops = (
+        db.query(WorkOrderOperation)
+        .filter(WorkOrderOperation.work_order_id == work_order_id)
+        .all()
+    )
+
+    if all_ops and all(op.status == OperationStatus.Completed for op in all_ops):
+        wo.status = OrderStatus.Completed
+        wo.completed_at = datetime.now(timezone.utc)
+
+
+def _auto_start_work_order(db: Session, work_order_id: int) -> None:
+    """
+    Bir operasyon InProgress'e geçince, iş emri hâlâ Waiting ise
+    otomatik olarak InProgress'e alır ve started_at'i damgalar.
+    """
+    wo = db.query(WorkOrder).get(work_order_id)
+    if not wo or wo.status != OrderStatus.Waiting:
+        return
+    wo.status = OrderStatus.InProgress
+    wo.started_at = datetime.now(timezone.utc)
 
 
 class StartOperationRequest(BaseModel):
@@ -461,6 +528,7 @@ def list_assigned_operations_by_work_center(work_center_id: int, db: Session = D
                 .joinedload(WorkOrder.production_order)
                 .joinedload(ProductionOrder.die)
                 .joinedload(Die.files),
+            joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.stock_item)
         )
         .filter(WorkOrderOperation.work_center_id == work_center_id,
         WorkOrderOperation.status.in_([OperationStatus.Waiting, OperationStatus.InProgress, OperationStatus.Paused]),)
@@ -503,6 +571,7 @@ def list_eligible_operations_for_work_center(work_center_id: int, db: Session = 
                 .joinedload(WorkOrder.production_order)
                 .joinedload(ProductionOrder.die)
                 .joinedload(Die.files),
+            joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.stock_item)
         )
         .filter(
             WorkOrderOperation.work_center_id.is_(None),
@@ -575,6 +644,7 @@ def list_operations_by_work_center(
             joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.production_order).joinedload(ProductionOrder.die),
             joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.production_order).joinedload(ProductionOrder.die).joinedload(Die.die_type),
             joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.production_order).joinedload(ProductionOrder.die).joinedload(Die.files),
+            joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.stock_item),
         )
         .filter(WorkOrderOperation.work_center_id == work_center_id,
         WorkOrderOperation.status.in_([OperationStatus.Waiting, OperationStatus.InProgress, OperationStatus.Paused]),)
@@ -585,7 +655,7 @@ def list_operations_by_work_center(
 
 
 # @ops_router.post("/", response_model=WorkOrderOperationRead, status_code=201)
-@ops_router.post("/", response_model=WorkOrderOperationRead, status_code=201, dependencies=[Depends(require_admin)])
+@ops_router.post("/", response_model=WorkOrderOperationRead, status_code=201)
 def create_work_order_operation(
     payload: WorkOrderOperationCreate,
     db: Session = Depends(get_db),
@@ -653,15 +723,22 @@ def update_work_order_operation(
             op.status = OperationStatus.InProgress
             op.started_at = datetime.now(timezone.utc)
 
-            # İstersek operatör adını da burada güncelleriz
-            # operator adı değil sicil ekleyeceğiz ama buraya değil logda tutucaz
-            # if "operator_name" in data and data["operator_name"]:
-            #     op.operator_name = data["operator_name"]
+            # İş emri hâlâ Waiting ise InProgress'e al
+            _auto_start_work_order(db, op.work_order_id)
 
             # Work center'ı meşgul yap
             wc = db.query(WorkCenter).get(op.work_center_id)
+            # if wc:
+            #     wc.status = WorkCenterStatus.Busy
             if wc:
-                wc.status = WorkCenterStatus.Busy
+                is_isil_islem = False
+                if op.operation_type and op.operation_type.name in ['ISIL İŞLEM TARTIM', 'ISIL İŞLEM']:
+                    is_isil_islem = True
+                elif wc.name in ['ISIL İŞLEM TARTIM', 'ISIL İŞLEM']:
+                    is_isil_islem = True
+                
+                if not is_isil_islem:
+                    wc.status = WorkCenterStatus.Busy
 
         elif new_status == OperationStatus.Paused:
             require_work_center()
@@ -691,6 +768,9 @@ def update_work_order_operation(
             wc = db.query(WorkCenter).get(op.work_center_id)
             if wc:
                 wc.status = WorkCenterStatus.Available
+
+            # Tüm operasyonlar bittiyse work order'ı da tamamla
+            _auto_complete_work_order(db, op.work_order_id)
 
         else:
             # Diğer statüler için sadece doğrudan ata
@@ -786,11 +866,41 @@ def start_operation(
     op_row.status = OperationStatus.InProgress
     op_row.started_at = datetime.now(timezone.utc)
 
+    # İş emri hâlâ Waiting ise InProgress'e al
+    _auto_start_work_order(db, op_row.work_order_id)
+
+    # Move WIP stock item to WorkCenter's location
+    work_order = db.query(WorkOrder).get(op_row.work_order_id)
+    if work_order and work_order.stock_item_id:
+        from ..models import Location, StockTransaction, TransactionType
+        wc_location = db.query(Location).filter(Location.work_center_id == wc.id).first()
+        if wc_location:
+            wip_item = db.query(StockItem).get(work_order.stock_item_id)
+            if wip_item and wip_item.location_id != wc_location.id:
+                wip_item.location_id = wc_location.id
+                txn = StockTransaction(
+                    stock_item_id=wip_item.id,
+                    transaction_type=TransactionType.LOCATION_MOVE,
+                    quantity_change=0,
+                    quantity_after=wip_item.quantity,
+                    notes=f"Moved to work center {wc.name}",
+                    work_order_id=op_row.work_order_id
+                )
+                db.add(txn)
+
     if payload.operator_name:
         op_row.operator_name = payload.operator_name
 
     # work center busy
-    wc.status = WorkCenterStatus.Busy
+    # wc.status = WorkCenterStatus.Busy
+    is_isil_islem = False
+    if op_row.operation_type and op_row.operation_type.name in ['ISIL İŞLEM TARTIM', 'ISIL İŞLEM']:
+        is_isil_islem = True
+    elif wc.name in ['ISIL İŞLEM TARTIM', 'ISIL İŞLEM']:
+        is_isil_islem = True
+        
+    if not is_isil_islem:
+        wc.status = WorkCenterStatus.Busy
 
     db.commit()
     db.refresh(op_row)
@@ -869,6 +979,7 @@ def available_for_operator(payload: AvailableForOperatorRequest, db: Session = D
                 .joinedload(WorkOrder.production_order)
                 .joinedload(ProductionOrder.die)
                 .joinedload(Die.files),
+            joinedload(WorkOrderOperation.work_order).joinedload(WorkOrder.stock_item)
         )
         .filter(
             WorkOrderOperation.status == OperationStatus.Waiting,
@@ -893,65 +1004,62 @@ def list_available_lots_for_operation(operation_id: int, db: Session = Depends(g
         .options(
             joinedload(WorkOrderOperation.work_order)
                 .joinedload(WorkOrder.die_component)
-                .joinedload(DieComponent.stock_item)   # ✅ stock_item'ı da yükle
+                .joinedload(DieComponent.stock_item),
+            joinedload(WorkOrderOperation.work_order)
+                .joinedload(WorkOrder.stock_item)
         )
         .get(operation_id)
     )
-    if not op:
-        raise HTTPException(status_code=404, detail="Work order operation not found")
-
-    if not op.work_order or not op.work_order.die_component or not op.work_order.die_component.stock_item:
-        raise HTTPException(status_code=400, detail="Operation has no die component / stock item")
-
-    component_stock = op.work_order.die_component.stock_item
-    min_diameter = component_stock.diameter_mm
-    alloy = component_stock.alloy
-
-    # ✅ aynı alloy + çap >= seçilen çap olan tüm stock_item’ları bul
-    eligible_stock_item_ids = [
-        x.id
-        for x in (
-            db.query(SteelStockItem.id)
-            .filter(
-                SteelStockItem.alloy == alloy,
-                SteelStockItem.diameter_mm >= min_diameter,
-            )
-            .all()
-        )
-    ]
-
-    if not eligible_stock_item_ids:
+    if not op or not op.work_order:
         return []
 
-    lots = (
-        db.query(Lot)
-        .options(joinedload(Lot.stock_item))  # ✅ alloy/diameter döndürmek için
-        .filter(
-            Lot.stock_item_id.in_(eligible_stock_item_ids),
-            Lot.remaining_kg > 0
-        )
-        # ✅ önce daha küçük çaplar önce gelsin (seçilen çapa yakın), sonra eski lotlar
-        .order_by(
-            asc(Lot.stock_item_id),          # istersen bunu kaldır
-            asc(Lot.received_date)
-        )
-        .all()
-    )
+    component_stock = None
+    if op.work_order.pre_machining_order_number and op.work_order.stock_item:
+        component_stock = op.work_order.stock_item
+    elif op.work_order.die_component and op.work_order.die_component.stock_item:
+        component_stock = op.work_order.die_component.stock_item
+    
+    if not component_stock:
+        return []
 
-    # ✅ response’a alloy/diameter basmak için map’leyelim
-    out: List[LotForSawRead] = []
-    for lot in lots:
+    req_diameter = component_stock.attributes.get("diameter_mm") if component_stock.attributes else None
+    req_alloy = component_stock.attributes.get("alloy") if component_stock.attributes else None
+
+    from ..models import ItemType
+    items = db.query(StockItem).options(
+        joinedload(StockItem.lot).joinedload(Lot.supplier),
+        joinedload(StockItem.lot).joinedload(Lot.material_grade)
+    ).filter(
+        StockItem.item_type == ItemType.RAW_MATERIAL,
+        StockItem.is_active == True,
+        StockItem.quantity > 0
+    ).all()
+
+    out = []
+    for item in items:
+        dia = item.attributes.get("diameter_mm") if item.attributes else None
+        if req_diameter and dia and int(dia) < int(req_diameter):
+            continue
+            
+        alloy = item.attributes.get("alloy") if item.attributes else None
+        if not alloy and item.lot and item.lot.material_grade:
+            alloy = item.lot.material_grade.name
+            
+        if req_alloy and alloy != req_alloy:
+            continue
+            
+        lot = item.lot
         out.append(LotForSawRead(
-            id=lot.id,
-            certificate_number=lot.certificate_number,
-            supplier=lot.supplier,
-            length_mm=lot.length_mm,
-            gross_weight_kg=lot.gross_weight_kg,
-            remaining_kg=lot.remaining_kg,
-            received_date=lot.received_date,
-            stock_item_id=lot.stock_item_id,
-            alloy=getattr(lot.stock_item, "alloy", None),
-            diameter_mm=getattr(lot.stock_item, "diameter_mm", None),
+            id=item.id,
+            stock_item_id=item.id,
+            certificate_number=lot.certificate_number if lot else None,
+            supplier=lot.supplier.name if lot and lot.supplier else None,
+            length_mm=item.attributes.get("length_mm") if item.attributes else None,
+            gross_weight_kg=float(item.quantity),
+            remaining_kg=float(item.quantity),
+            received_date=lot.receive_date if lot else item.created_at,
+            alloy=alloy,
+            diameter_mm=dia,
         ))
     return out
 
@@ -962,21 +1070,15 @@ class CompleteSawRequest(BaseModel):
 
 @ops_router.post("/{operation_id}/complete-saw", response_model=WorkOrderOperationRead)
 def complete_saw_operation(operation_id: int, payload: CompleteSawRequest, db: Session = Depends(get_db)):
-    """
-    TESTERE operasyonu tamamlanırken:
-    - Lot seçilir
-    - quantity_kg kadar lot.remaining_kg düşülür
-    - StockMovement yazılır
-    - WorkOrder.lot_id set edilir (+ actual_consumption_kg opsiyonel güncellenir)
-    - Operation Completed + wc Available
-    """
     op = (
         db.query(WorkOrderOperation)
         .options(
             joinedload(WorkOrderOperation.work_center),
             joinedload(WorkOrderOperation.work_order)
                 .joinedload(WorkOrder.die_component)
-                .joinedload(DieComponent.stock_item),   # ✅ EKLE
+                .joinedload(DieComponent.stock_item),
+            joinedload(WorkOrderOperation.work_order)
+                .joinedload(WorkOrder.stock_item),
             joinedload(WorkOrderOperation.operation_type),
         )
         .get(operation_id)
@@ -985,19 +1087,12 @@ def complete_saw_operation(operation_id: int, payload: CompleteSawRequest, db: S
     if not op:
         raise HTTPException(status_code=404, detail="Work order operation not found")
 
-    # sadece atanmış operasyon tamamlanabilir
     if op.work_center_id is None:
         raise HTTPException(status_code=400, detail="Work center must be assigned before completing")
 
-    # zaten Completed/Cancelled ise engelle
     if op.status in (OperationStatus.Completed, OperationStatus.Cancelled):
         raise HTTPException(status_code=400, detail="Operation is already completed/cancelled")
 
-    # TESTERE check (senin datanda opTypeId=33 gibi duruyor)
-    # İstersen daha sağlam: op.operation_type.code == "SAW" gibi yaparsın.
-    # SAW_OPERATION_TYPE_ID = 33
-    # if op.operation_type_id != SAW_OPERATION_TYPE_ID:
-    #     raise HTTPException(status_code=400, detail="This endpoint is only for SAW/TESTERE operations")
     if op.operation_type.code not in ["T", "SAW", "TESTERE"]:
         raise HTTPException(status_code=400, detail=f"This endpoint is only for SAW/TESTERE operations (got {op.operation_type.code})")
 
@@ -1005,76 +1100,67 @@ def complete_saw_operation(operation_id: int, payload: CompleteSawRequest, db: S
         raise HTTPException(status_code=400, detail="quantity_kg must be > 0")
 
     wo = op.work_order
-    if not wo or not wo.die_component:
-        raise HTTPException(status_code=400, detail="Work order / die component not found")
+    if not wo:
+        raise HTTPException(status_code=400, detail="Work order not found")
+        
+    if not wo.die_component and not wo.pre_machining_order_number:
+        raise HTTPException(status_code=400, detail="Work order must have a die component or be a pre-machining order")
 
-    # Lot doğrula: aynı stock_item mı?
-    # lot = db.query(Lot).get(payload.lot_id)
-    lot = (
-        db.query(Lot)
-        .options(joinedload(Lot.stock_item))   # ✅ EKLE
-        .get(payload.lot_id)
-    )
+    # Use the inventory service to cut steel and generate WIP
+    from ..services.inventory_service import cut_steel_generate_wip
+    from ..schemas.inventory import CutSteelRequest
 
-    if not lot:
-        raise HTTPException(status_code=404, detail="Lot not found")
+    child_attrs = {}
+    if wo.die_component and wo.die_component.stock_item:
+        child_attrs = wo.die_component.stock_item.attributes or {}
+    elif wo.pre_machining_order_number and wo.stock_item:
+        child_attrs = wo.stock_item.attributes or {}
+        
+    # Set the planned cut length into child attributes if it exists on PM order
+    child_attrs = dict(child_attrs)
+    if wo.pre_machining_order_number and wo.planned_cut_length_mm is not None:
+        child_attrs["length_mm"] = float(wo.planned_cut_length_mm)
+        
+    import decimal
+    import decimal
+    for k, v in child_attrs.items():
+        if isinstance(v, decimal.Decimal):
+            child_attrs[k] = float(v)
 
-    # stock_item_id = wo.die_component.stock_item_id
-    # if lot.stock_item_id != stock_item_id:
-    #     raise HTTPException(status_code=400, detail="Selected lot does not match required steel stock item")
+    if wo.pre_machining_order_number:
+        child_attrs["Sipariş Türü"] = "Ön İşleme"
+    elif wo.production_order and wo.production_order.die:
+        child_attrs["Kalıp"] = wo.production_order.die.die_number
+        if wo.die_component and wo.die_component.component_type:
+            child_attrs["Bileşen"] = wo.die_component.component_type.name
 
-    component_stock = wo.die_component.stock_item
-    if not component_stock:
-        raise HTTPException(status_code=400, detail="Die component stock item not found")
-
-    # ✅ alloy + diameter kuralı
-    lot_stock = lot.stock_item
-    if not lot_stock:
-        raise HTTPException(status_code=400, detail="Lot stock item not found")
-
-    if lot_stock.alloy != component_stock.alloy:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Selected lot alloy mismatch (need {component_stock.alloy}, got {lot_stock.alloy})",
-        )
-
-    if int(lot_stock.diameter_mm) < int(component_stock.diameter_mm):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Selected lot diameter too small (need >= {component_stock.diameter_mm}, got {lot_stock.diameter_mm})",
-        )
-
-    if float(lot.remaining_kg) < float(payload.quantity_kg):
-        raise HTTPException(status_code=400, detail="Lot remaining_kg is not enough")
-
-    # Lot düş
-    lot.remaining_kg = float(lot.remaining_kg) - float(payload.quantity_kg)
-
-    # WorkOrder lot + actual
-    wo.lot_id = lot.id
-    if wo.actual_consumption_kg is None:
-        wo.actual_consumption_kg = float(payload.quantity_kg)
-    else:
-        wo.actual_consumption_kg = float(wo.actual_consumption_kg) + float(payload.quantity_kg)
-
-    # StockMovement yaz
-    mv = StockMovement(
-        lot_id=lot.id,
+    cut_req = CutSteelRequest(
+        parent_stock_item_id=payload.lot_id,  # payload.lot_id holds the selected StockItem.id from available-lots
+        cut_quantity=payload.quantity_kg,
+        child_attributes=child_attrs,
         work_order_id=wo.id,
-        quantity_kg=float(payload.quantity_kg),
-        movement_date=datetime.now(timezone.utc),
-        notes=payload.note,
+        notes=payload.note
     )
-    db.add(mv)
+    
+    try:
+        res = cut_steel_generate_wip(db, cut_req)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-    # Operation completed + timestamps
+    # Set WorkOrder properties
+    wo.actual_consumption_kg = (float(wo.actual_consumption_kg) if wo.actual_consumption_kg else 0) + payload.quantity_kg
+    if res.parent.lot_id:
+        wo.lot_id = res.parent.lot_id
+
+    # Complete operation
     op.status = OperationStatus.Completed
     op.completed_at = datetime.now(timezone.utc)
 
-    # WorkCenter available
     wc = db.query(WorkCenter).get(op.work_center_id)
     if wc:
         wc.status = WorkCenterStatus.Available
+
+    _auto_complete_work_order(db, op.work_order_id)
 
     db.commit()
     db.refresh(op)
@@ -1089,8 +1175,7 @@ def complete_saw_operation(operation_id: int, payload: CompleteSawRequest, db: S
                 .joinedload(DieComponent.component_type),
             joinedload(WorkOrderOperation.work_order)
                 .joinedload(WorkOrder.production_order)
-                .joinedload(ProductionOrder.die)
-                .joinedload(Die.die_type),
+                .joinedload(ProductionOrder.die),
             joinedload(WorkOrderOperation.work_order)
                 .joinedload(WorkOrder.production_order)
                 .joinedload(ProductionOrder.die)

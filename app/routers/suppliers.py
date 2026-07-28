@@ -7,7 +7,6 @@ from datetime import datetime
 
 from ..database import get_db
 from ..models import Supplier, Lot
-from ..deps import require_admin
 
 router = APIRouter(prefix="/suppliers", tags=["Suppliers"])
 
@@ -83,7 +82,7 @@ def list_suppliers(
     return query.order_by(Supplier.name).all()
 
 
-@router.post("", response_model=SupplierRead, status_code=201, dependencies=[Depends(require_admin)])
+@router.post("", response_model=SupplierRead, status_code=201)
 def create_supplier(payload: SupplierCreate, db: Session = Depends(get_db)):
     existing = db.query(Supplier).filter(Supplier.name == payload.name).first()
     if existing:
@@ -96,7 +95,7 @@ def create_supplier(payload: SupplierCreate, db: Session = Depends(get_db)):
     return supplier
 
 
-@router.put("/{id}", response_model=SupplierRead, dependencies=[Depends(require_admin)])
+@router.put("/{id}", response_model=SupplierRead)
 def update_supplier(id: int, payload: SupplierUpdate, db: Session = Depends(get_db)):
     supplier = db.query(Supplier).get(id)
     if not supplier:
@@ -118,7 +117,7 @@ def update_supplier(id: int, payload: SupplierUpdate, db: Session = Depends(get_
     return supplier
 
 
-@router.delete("/{id}", status_code=204, dependencies=[Depends(require_admin)])
+@router.delete("/{id}", status_code=204)
 def delete_supplier(id: int, db: Session = Depends(get_db)):
     supplier = db.query(Supplier).get(id)
     if not supplier:
