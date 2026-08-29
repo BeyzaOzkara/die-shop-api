@@ -27,12 +27,14 @@ class ItemCategoryCreate(BaseModel):
     name: str
     base_uom: str
     is_cuttable: bool = False
+    attributes_schema: Optional[list[dict]] = None
 
 class ItemCategoryRead(BaseModel):
     id: int
     name: str
     base_uom: str
     is_cuttable: bool
+    attributes_schema: Optional[list[dict]] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -41,6 +43,7 @@ class ItemCategoryUpdate(BaseModel):
     name: Optional[str] = None
     base_uom: Optional[str] = None
     is_cuttable: Optional[bool] = None
+    attributes_schema: Optional[list[dict]] = None
 
 
 class MaterialGradeCreate(BaseModel):
@@ -158,6 +161,9 @@ class StockItemRead(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+class StockItemPaginatedRead(BaseModel):
+    items: list[StockItemRead]
+    total: int
 
 # =========================
 # STOCK TRANSACTION (LEDGER) SCHEMAS

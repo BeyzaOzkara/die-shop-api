@@ -42,7 +42,7 @@ router = APIRouter(prefix="/auth", tags=["Auth"])
 
 class LoginRequest(BaseModel):
     username: str
-    password: str
+    password: str = Field(max_length=72)
 
 
 class TokenResponse(BaseModel):
@@ -76,7 +76,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
 class SignupRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     surname: str = Field(min_length=1, max_length=100)
-    password: str = Field(min_length=6, max_length=128)
+    password: str = Field(min_length=6, max_length=72)
     email: str | None = None   # ✅ opsiyonel, validasyon yok
 
 

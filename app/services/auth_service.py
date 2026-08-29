@@ -14,7 +14,12 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(password: str, password_hash: str) -> bool:
-    return pwd_context.verify(password, password_hash)
+    try:
+        return pwd_context.verify(password, password_hash)
+    except ValueError as e:
+        if "cannot be longer than 72 bytes" in str(e):
+            return False
+        raise
 
 
 def create_access_token(subject: str, secret_key: str, expires_minutes: int) -> str:

@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from .config import settings
 
 from .database import engine, Base
-from .routers import inventory, suppliers, operators, operation_types, die_config, dies, production_orders, component_bom, work_orders, operator_panel, pre_machining
+from .routers import inventory, suppliers, operators, operation_types, die_config, dies, production_orders, component_bom, work_orders, operator_panel, pre_machining, reports
 from app.routers.auth import router as auth_router
 
 app = FastAPI(
@@ -13,6 +13,7 @@ app = FastAPI(
     version="0.1.0",
     # root_path="/api",
 )
+Base.metadata.create_all(bind=engine)
 
 # Base.metadata.create_all(bind=engine)
 # CORS (React'in bağlanabilmesi için)
@@ -45,6 +46,7 @@ app.include_router(operation_types.router)
 app.include_router(operator_panel.router)
 app.include_router(suppliers.router)
 app.include_router(pre_machining.router)
+app.include_router(reports.router)
 
 @app.get("/health")
 def health_check():

@@ -203,6 +203,7 @@ class ItemCategory(Base):
     name = Column(String, unique=True, nullable=False)   # "Round Bar", "Flat Plate", "Bolt", "Coolant"
     base_uom = Column(String(20), nullable=False)        # "mm", "pcs", "liters", "kg"
     is_cuttable = Column(Boolean, nullable=False, default=False)
+    attributes_schema = Column(JSONB, nullable=True, default=list)
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
     stock_items = relationship("StockItem", back_populates="category")

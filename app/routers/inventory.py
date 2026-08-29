@@ -5,7 +5,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as UploadFileField, Form, Query
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import or_, func
+from sqlalchemy import or_, func, cast, String
 from pydantic import BaseModel, ConfigDict
 
 from ..config import settings
@@ -32,7 +32,7 @@ from ..schemas.inventory import (
     MaterialGradeCreate, MaterialGradeRead, MaterialGradeUpdate,
     LocationCreate, LocationRead, LocationUpdate,
     LotCreate, LotRead,
-    StockItemCreate, StockItemRead,
+    StockItemCreate, StockItemRead, StockItemPaginatedRead,
     StockTransactionRead,
     ProcessBatchCreate, ProcessBatchRead,
     CutSteelRequest, CutSteelResponse,
@@ -378,6 +378,50 @@ def list_stock_items(
         query = query.filter(StockItem.lot_id == lot_id)
         
     return query.all()
+
+@router.get("/stock-items-paginated", response_model=StockItemPaginatedRead)
+def list_stock_items_paginated(
+    skip: int = 0,
+    limit: int = 20,
+    search: Optional[str] = None,
+    item_type: Optional[str] = None,
+    category_id: Optional[int] = None,
+    location_id: Optional[int] = None,
+    min_quantity: Optional[float] = None,
+    max_quantity: Optional[float] = None,
+    attributes_search: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    query = db.query(StockItem).options(
+        joinedload(StockItem.category),
+        joinedload(StockItem.lot),
+        joinedload(StockItem.location)
+    )
+    
+    if search:
+        search_filter = []
+        if search.isdigit():
+            search_filter.append(StockItem.id == int(search))
+        search_filter.append(StockItem.lot.has(Lot.lot_number.ilike(f"%{search}%")))
+        query = query.filter(or_(*search_filter))
+        
+    if item_type:
+        query = query.filter(StockItem.item_type == ItemType(item_type))
+    if category_id:
+        query = query.filter(StockItem.category_id == category_id)
+    if location_id:
+        query = query.filter(StockItem.location_id == location_id)
+    if min_quantity is not None:
+        query = query.filter(StockItem.quantity >= min_quantity)
+    if max_quantity is not None:
+        query = query.filter(StockItem.quantity <= max_quantity)
+    if attributes_search:
+        query = query.filter(cast(StockItem.attributes, String).ilike(f"%{attributes_search}%"))
+        
+    total = query.count()
+    items = query.order_by(StockItem.id.desc()).offset(skip).limit(limit).all()
+    
+    return {"items": items, "total": total}
 
 @router.post("/stock-items", response_model=StockItemRead, status_code=201)
 def create_stock_item(payload: StockItemCreate, db: Session = Depends(get_db)):
