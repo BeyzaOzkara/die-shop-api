@@ -17,7 +17,7 @@ from ..models import (
     OperationType,
     Location,
     ItemCategory,
-    MaterialGrade,
+    MaterialProfile,
     Supplier,
     Lot,
     StockItem,
@@ -25,11 +25,12 @@ from ..models import (
     ProcessBatch,
     ItemType,
     TransactionType,
-    BatchStatus
+    BatchStatus,
+    DieComponent
 )
 from ..schemas.inventory import (
     ItemCategoryCreate, ItemCategoryRead, ItemCategoryUpdate,
-    MaterialGradeCreate, MaterialGradeRead, MaterialGradeUpdate,
+    MaterialProfileCreate, MaterialProfileRead, MaterialProfileUpdate,
     LocationCreate, LocationRead, LocationUpdate,
     LotCreate, LotRead,
     StockItemCreate, StockItemRead, StockItemPaginatedRead,
@@ -264,45 +265,59 @@ def delete_category(id: int, db: Session = Depends(get_db)):
     return
 
 # =========================
-# MaterialGrade
+# MaterialProfile
 # =========================
 
-@router.get("/material-grades", response_model=List[MaterialGradeRead])
-def list_material_grades(db: Session = Depends(get_db)):
-    return db.query(MaterialGrade).all()
+@router.get("/material-profiles", response_model=List[MaterialProfileRead])
+def list_material_profiles(
+    category_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    query = db.query(MaterialProfile).options(joinedload(MaterialProfile.category))
+    if category_id is not None:
+        query = query.filter(MaterialProfile.category_id == category_id)
+    return query.order_by(MaterialProfile.display_name).all()
 
-@router.post("/material-grades", response_model=MaterialGradeRead, status_code=201)
-def create_material_grade(payload: MaterialGradeCreate, db: Session = Depends(get_db)):
-    mg = MaterialGrade(**payload.model_dump())
-    db.add(mg)
+@router.post("/material-profiles", response_model=MaterialProfileRead, status_code=201)
+def create_material_profile(payload: MaterialProfileCreate, db: Session = Depends(get_db)):
+    # Validate category exists
+    cat = db.query(ItemCategory).get(payload.category_id)
+    if not cat:
+        raise HTTPException(status_code=400, detail="Category not found.")
+    
+    mp = MaterialProfile(**payload.model_dump())
+    db.add(mp)
     db.commit()
-    db.refresh(mg)
-    return mg
+    db.refresh(mp)
+    return db.query(MaterialProfile).options(joinedload(MaterialProfile.category)).get(mp.id)
 
-@router.patch("/material-grades/{id}", response_model=MaterialGradeRead)
-def update_material_grade(id: int, payload: MaterialGradeUpdate, db: Session = Depends(get_db)):
-    mg = db.query(MaterialGrade).get(id)
-    if not mg:
-        raise HTTPException(status_code=404, detail="Material grade not found")
-        
+@router.patch("/material-profiles/{id}", response_model=MaterialProfileRead)
+def update_material_profile(id: int, payload: MaterialProfileUpdate, db: Session = Depends(get_db)):
+    mp = db.query(MaterialProfile).get(id)
+    if not mp:
+        raise HTTPException(status_code=404, detail="Material profile not found")
+    
     data = payload.model_dump(exclude_unset=True)
     for field, value in data.items():
-        setattr(mg, field, value)
-        
+        setattr(mp, field, value)
+    
     db.commit()
-    db.refresh(mg)
-    return mg
+    db.refresh(mp)
+    return db.query(MaterialProfile).options(joinedload(MaterialProfile.category)).get(mp.id)
 
-@router.delete("/material-grades/{id}", status_code=204)
-def delete_material_grade(id: int, db: Session = Depends(get_db)):
-    mg = db.query(MaterialGrade).get(id)
-    if not mg:
-        raise HTTPException(status_code=404, detail="Material grade not found")
-        
-    if db.query(Lot).filter(Lot.material_grade_id == id).first():
-        raise HTTPException(status_code=400, detail="Cannot delete material grade: it is assigned to one or more lots.")
-        
-    db.delete(mg)
+@router.delete("/material-profiles/{id}", status_code=204)
+def delete_material_profile(id: int, db: Session = Depends(get_db)):
+    mp = db.query(MaterialProfile).get(id)
+    if not mp:
+        raise HTTPException(status_code=404, detail="Material profile not found")
+    
+    if db.query(Lot).filter(Lot.material_profile_id == id).first():
+        raise HTTPException(status_code=400, detail="Cannot delete profile: it is assigned to one or more lots.")
+    
+    if db.query(DieComponent).filter(DieComponent.material_profile_id == id).first():
+        raise HTTPException(status_code=400, detail="Cannot delete profile: it is assigned to one or more die components.")
+    
+    db.delete(mp)
     db.commit()
     return
 
@@ -318,7 +333,7 @@ def list_lots(
 ):
     query = db.query(Lot).options(
         joinedload(Lot.supplier),
-        joinedload(Lot.material_grade),
+        joinedload(Lot.material_profile).joinedload(MaterialProfile.category),
         joinedload(Lot.files)
     )
     if lot_number:
@@ -352,7 +367,11 @@ def create_lot(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Create lot failed: {e}")
 
-    return db.query(Lot).options(joinedload(Lot.supplier), joinedload(Lot.material_grade), joinedload(Lot.files)).get(lot.id)
+    return db.query(Lot).options(
+        joinedload(Lot.supplier),
+        joinedload(Lot.material_profile).joinedload(MaterialProfile.category),
+        joinedload(Lot.files)
+    ).get(lot.id)
 
 # =========================
 # StockItems
@@ -367,7 +386,7 @@ def list_stock_items(
 ):
     query = db.query(StockItem).options(
         joinedload(StockItem.category),
-        joinedload(StockItem.lot),
+        joinedload(StockItem.lot).joinedload(Lot.material_profile),
         joinedload(StockItem.location)
     )
     if item_type:
@@ -394,7 +413,7 @@ def list_stock_items_paginated(
 ):
     query = db.query(StockItem).options(
         joinedload(StockItem.category),
-        joinedload(StockItem.lot),
+        joinedload(StockItem.lot).joinedload(Lot.material_profile),
         joinedload(StockItem.location)
     )
     
@@ -441,7 +460,11 @@ def create_stock_item(payload: StockItemCreate, db: Session = Depends(get_db)):
     db.add(tx)
     
     db.commit()
-    return db.query(StockItem).options(joinedload(StockItem.category), joinedload(StockItem.lot), joinedload(StockItem.location)).get(item.id)
+    return db.query(StockItem).options(
+        joinedload(StockItem.category),
+        joinedload(StockItem.lot).joinedload(Lot.material_profile),
+        joinedload(StockItem.location)
+    ).get(item.id)
 
 # =========================
 # ProcessBatch

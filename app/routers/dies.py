@@ -58,6 +58,18 @@ class StockItemNested(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def extract_attributes(cls, data: Any) -> Any:
+        # If it's a StockItem model instance with a lot and material_profile
+        if getattr(data, "lot", None) is not None and getattr(data.lot, "material_profile", None) is not None:
+             profile = data.lot.material_profile
+             if profile.attributes:
+                  return {
+                      "id": data.id,
+                      "alloy": profile.attributes.get("alloy"),
+                      "diameter_mm": profile.attributes.get("diameter_mm"),
+                      "description": profile.display_name,
+                  }
+        
+        # Fallback to legacy attributes
         if getattr(data, "attributes", None) is not None:
             return {
                 "id": data.id,
@@ -104,6 +116,7 @@ class DieBase(BaseModel):
 
 class DieComponentBase(BaseModel):
     component_type_id: int
+    material_profile_id: Optional[int] = None
     stock_item_id: Optional[int] = None
     package_length_mm: float
     theoretical_consumption_kg: float
@@ -117,6 +130,7 @@ class DieComponentUpdate(BaseModel):
     """Schema for updating a die component. Includes optional id for existing components."""
     id: Optional[int] = None  # if provided, this is an existing component to update
     component_type_id: int
+    material_profile_id: Optional[int] = None
     stock_item_id: Optional[int] = None
     package_length_mm: float
     theoretical_consumption_kg: float
@@ -186,11 +200,19 @@ class DieUpdate(BaseModel):
 
 # ---- DieComponent ----
 
+class MaterialProfileNested(BaseModel):
+    id: int
+    display_name: Optional[str] = None
+    attributes: Optional[dict] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
 class DieComponentRead(DieComponentBase):
     id: int
     die_id: int
     created_at: datetime
     component_type: Optional[ComponentTypeNested] = None
+    material_profile: Optional[MaterialProfileNested] = None
     stock_item: Optional[StockItemNested] = None
 
     model_config = ConfigDict(from_attributes=True)
@@ -444,7 +466,7 @@ def create_die(
     seen_component_type_ids = set()
 
     component_type_ids = [c.component_type_id for c in p.components]
-    stock_item_ids = [c.stock_item_id for c in p.components]
+    stock_item_ids = [c.stock_item_id for c in p.components if c.stock_item_id is not None]
 
     # duplicate component_type_id kontrolü
     for cid in component_type_ids:
@@ -516,6 +538,7 @@ def create_die(
             comp = DieComponent(
                 die_id=die.id,
                 component_type_id=c.component_type_id,
+                material_profile_id=c.material_profile_id,
                 stock_item_id=c.stock_item_id,
                 package_length_mm=c.package_length_mm,
                 theoretical_consumption_kg=c.theoretical_consumption_kg,
@@ -717,6 +740,7 @@ def replace_die_components(
                 # Update existing
                 existing_comp = existing_by_type[comp_data.component_type_id]
                 existing_comp.stock_item_id = comp_data.stock_item_id
+                existing_comp.material_profile_id = comp_data.material_profile_id
                 existing_comp.package_length_mm = comp_data.package_length_mm
                 existing_comp.theoretical_consumption_kg = comp_data.theoretical_consumption_kg
             else:
@@ -725,6 +749,7 @@ def replace_die_components(
                     die_id=die_id,
                     component_type_id=comp_data.component_type_id,
                     stock_item_id=comp_data.stock_item_id,
+                    material_profile_id=comp_data.material_profile_id,
                     package_length_mm=comp_data.package_length_mm,
                     theoretical_consumption_kg=comp_data.theoretical_consumption_kg,
                 )

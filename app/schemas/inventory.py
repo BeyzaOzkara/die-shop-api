@@ -28,6 +28,7 @@ class ItemCategoryCreate(BaseModel):
     base_uom: str
     is_cuttable: bool = False
     attributes_schema: Optional[list[dict]] = None
+    tracking_schema: Optional[list[dict]] = None
 
 class ItemCategoryRead(BaseModel):
     id: int
@@ -35,6 +36,7 @@ class ItemCategoryRead(BaseModel):
     base_uom: str
     is_cuttable: bool
     attributes_schema: Optional[list[dict]] = None
+    tracking_schema: Optional[list[dict]] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -44,23 +46,30 @@ class ItemCategoryUpdate(BaseModel):
     base_uom: Optional[str] = None
     is_cuttable: Optional[bool] = None
     attributes_schema: Optional[list[dict]] = None
+    tracking_schema: Optional[list[dict]] = None
 
 
-class MaterialGradeCreate(BaseModel):
-    name: str
-    composition: Optional[dict] = None   # {"C": 0.40, "Cr": 5.20, ...}
+class MaterialProfileCreate(BaseModel):
+    category_id: int
+    attributes: dict                       # {"diameter_mm": 120, "alloy": "2344"}
+    display_name: str                      # "Ø120 - 2344"
 
-class MaterialGradeRead(BaseModel):
+class MaterialProfileRead(BaseModel):
     id: int
-    name: str
-    composition: Optional[dict] = None
+    category_id: int
+    attributes: dict
+    display_name: str
+    is_active: bool
     created_at: datetime
+
+    category: Optional[ItemCategoryRead] = None
 
     model_config = ConfigDict(from_attributes=True)
 
-class MaterialGradeUpdate(BaseModel):
-    name: Optional[str] = None
-    composition: Optional[dict] = None
+class MaterialProfileUpdate(BaseModel):
+    attributes: Optional[dict] = None
+    display_name: Optional[str] = None
+    is_active: Optional[bool] = None
 
 
 class LocationCreate(BaseModel):
@@ -108,7 +117,7 @@ class LotCreate(BaseModel):
     certificate_number: Optional[str] = None
     receive_date: datetime
     supplier_id: Optional[int] = None
-    material_grade_id: Optional[int] = None
+    material_profile_id: Optional[int] = None
     notes: Optional[str] = None
 
 class LotRead(BaseModel):
@@ -117,13 +126,13 @@ class LotRead(BaseModel):
     certificate_number: Optional[str] = None
     receive_date: datetime
     supplier_id: Optional[int] = None
-    material_grade_id: Optional[int] = None
+    material_profile_id: Optional[int] = None
     notes: Optional[str] = None
     created_at: datetime
 
     # Nested relationships
     supplier: Optional[SupplierNested] = None
-    material_grade: Optional[MaterialGradeRead] = None
+    material_profile: Optional[MaterialProfileRead] = None
 
     model_config = ConfigDict(from_attributes=True)
 

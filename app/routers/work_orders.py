@@ -63,7 +63,8 @@ class DieComponentNested(BaseModel):
     id: int
     die_id: int
     component_type_id: int
-    stock_item_id: int
+    material_profile_id: Optional[int] = None
+    stock_item_id: Optional[int] = None
     package_length_mm: float
     theoretical_consumption_kg: float
     created_at: datetime
@@ -1018,35 +1019,52 @@ def list_available_lots_for_operation(operation_id: int, db: Session = Depends(g
         component_stock = op.work_order.stock_item
     elif op.work_order.die_component and op.work_order.die_component.stock_item:
         component_stock = op.work_order.die_component.stock_item
-    
-    if not component_stock:
+
+    req_profile_id = None
+    req_diameter = None
+    req_alloy = None
+
+    if op.work_order.die_component and op.work_order.die_component.material_profile_id:
+        req_profile_id = op.work_order.die_component.material_profile_id
+    elif component_stock and component_stock.attributes:
+        req_diameter = component_stock.attributes.get("diameter_mm")
+        req_alloy = component_stock.attributes.get("alloy")
+
+    if not component_stock and not req_profile_id:
         return []
 
-    req_diameter = component_stock.attributes.get("diameter_mm") if component_stock.attributes else None
-    req_alloy = component_stock.attributes.get("alloy") if component_stock.attributes else None
-
-    from ..models import ItemType
-    items = db.query(StockItem).options(
+    from ..models import ItemType, MaterialProfile
+    items_query = db.query(StockItem).options(
         joinedload(StockItem.lot).joinedload(Lot.supplier),
-        joinedload(StockItem.lot).joinedload(Lot.material_grade)
+        joinedload(StockItem.lot).joinedload(Lot.material_profile)
     ).filter(
         StockItem.item_type == ItemType.RAW_MATERIAL,
         StockItem.is_active == True,
         StockItem.quantity > 0
-    ).all()
+    )
+
+    if req_profile_id:
+        items_query = items_query.join(StockItem.lot).filter(Lot.material_profile_id == req_profile_id)
+
+    items = items_query.all()
 
     out = []
     for item in items:
-        dia = item.attributes.get("diameter_mm") if item.attributes else None
-        if req_diameter and dia and int(dia) < int(req_diameter):
-            continue
-            
-        alloy = item.attributes.get("alloy") if item.attributes else None
-        if not alloy and item.lot and item.lot.material_grade:
-            alloy = item.lot.material_grade.name
-            
-        if req_alloy and alloy != req_alloy:
-            continue
+        dia = None
+        alloy = None
+        if item.lot and item.lot.material_profile:
+             dia = item.lot.material_profile.attributes.get("diameter_mm")
+             alloy = item.lot.material_profile.attributes.get("alloy")
+        elif item.attributes:
+             dia = item.attributes.get("diameter_mm")
+             alloy = item.attributes.get("alloy")
+
+        if req_profile_id is None:
+            if req_diameter and dia and int(dia) < int(req_diameter):
+                continue
+                
+            if req_alloy and alloy != req_alloy:
+                continue
             
         lot = item.lot
         out.append(LotForSawRead(

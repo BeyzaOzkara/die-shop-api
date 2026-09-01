@@ -65,16 +65,19 @@ CREATE TABLE item_category (
 
 CREATE INDEX ix_item_category_id ON item_category (id);
 
-CREATE TABLE material_grade (
+CREATE TABLE material_profile (
 	id SERIAL NOT NULL, 
-	name VARCHAR NOT NULL, 
-	composition JSONB, 
-	created_at TIMESTAMP WITH TIME ZONE, 
+	category_id INTEGER NOT NULL, 
+	attributes JSONB NOT NULL DEFAULT '{}', 
+	display_name VARCHAR NOT NULL, 
+	is_active BOOLEAN NOT NULL DEFAULT true, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now(), 
 	PRIMARY KEY (id), 
-	UNIQUE (name)
+	FOREIGN KEY(category_id) REFERENCES item_category (id)
 );
 
-CREATE INDEX ix_material_grade_id ON material_grade (id);
+CREATE INDEX ix_material_profile_id ON material_profile (id);
+CREATE INDEX ix_material_profile_category_id ON material_profile (category_id);
 
 CREATE TABLE die_type (
 	id SERIAL NOT NULL, 
@@ -275,12 +278,12 @@ CREATE TABLE lot (
 	certificate_number VARCHAR, 
 	receive_date TIMESTAMP WITH TIME ZONE NOT NULL, 
 	supplier_id INTEGER, 
-	material_grade_id INTEGER, 
+	material_profile_id INTEGER, 
 	notes TEXT, 
 	created_at TIMESTAMP WITH TIME ZONE, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(supplier_id) REFERENCES supplier (id), 
-	FOREIGN KEY(material_grade_id) REFERENCES material_grade (id)
+	FOREIGN KEY(material_profile_id) REFERENCES material_profile (id)
 );
 
 CREATE INDEX ix_lot_id ON lot (id);
@@ -368,6 +371,7 @@ CREATE TABLE die_component (
 	id SERIAL NOT NULL, 
 	die_id INTEGER NOT NULL, 
 	component_type_id INTEGER NOT NULL, 
+	material_profile_id INTEGER,
 	stock_item_id INTEGER, 
 	package_length_mm NUMERIC(10, 2) NOT NULL, 
 	theoretical_consumption_kg NUMERIC(12, 3) NOT NULL, 
@@ -375,6 +379,7 @@ CREATE TABLE die_component (
 	PRIMARY KEY (id), 
 	FOREIGN KEY(die_id) REFERENCES die (id), 
 	FOREIGN KEY(component_type_id) REFERENCES component_type (id), 
+	FOREIGN KEY(material_profile_id) REFERENCES material_profile (id),
 	FOREIGN KEY(stock_item_id) REFERENCES stock_item (id)
 );
 

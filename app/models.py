@@ -204,20 +204,35 @@ class ItemCategory(Base):
     base_uom = Column(String(20), nullable=False)        # "mm", "pcs", "liters", "kg"
     is_cuttable = Column(Boolean, nullable=False, default=False)
     attributes_schema = Column(JSONB, nullable=True, default=list)
+    tracking_schema = Column(JSONB, nullable=True, default=list)
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
     stock_items = relationship("StockItem", back_populates="category")
 
-class MaterialGrade(Base):
-    """Steel / material grade with full chemical composition."""
-    __tablename__ = "material_grade"
+class MaterialProfile(Base):
+    """Generic material specification — category-scoped catalog entry.
+
+    Stores invariant material properties (e.g. diameter + alloy for steel,
+    thread_size for bolts) as JSONB attributes whose shape is defined by
+    the related ItemCategory.attributes_schema.
+
+    Examples:
+        Round Bar: {"diameter_mm": 120, "alloy": "2344"} → display "Ø120 - 2344"
+        Bolt:      {"thread_size": "M12", "length_mm": 50} → display "M12 x 50"
+    """
+    __tablename__ = "material_profile"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, unique=True, nullable=False)   # "1.2344", "H13", "D2"
-    composition = Column(JSONB, nullable=True)            # {"C": 0.40, "Cr": 5.20, "Mo": 1.30, ...}
+    category_id = Column(Integer, ForeignKey("item_category.id"), nullable=False)
+    attributes = Column(JSONB, nullable=False, default=dict)  # invariant properties
+    display_name = Column(String, nullable=False)              # human-readable label
+    is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
-    lots = relationship("Lot", back_populates="material_grade")
+    # Relationships
+    category = relationship("ItemCategory")
+    lots = relationship("Lot", back_populates="material_profile")
+    die_components = relationship("DieComponent", back_populates="material_profile")
 
 
 # =========================
@@ -367,6 +382,7 @@ class Lot(Base):
     """A specific delivery / heat number. Origin metadata container.
     
     Decoupled from physical stock — physical dimensions now live in StockItem.
+    References a MaterialProfile for the invariant material specification.
     """
     __tablename__ = "lot"
 
@@ -376,14 +392,14 @@ class Lot(Base):
     receive_date = Column(DateTime(timezone=True), nullable=False)
 
     supplier_id = Column(Integer, ForeignKey("supplier.id"), nullable=True)
-    material_grade_id = Column(Integer, ForeignKey("material_grade.id"), nullable=True)
+    material_profile_id = Column(Integer, ForeignKey("material_profile.id"), nullable=True)
 
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
     # Relationships
     supplier = relationship("Supplier", back_populates="lots")
-    material_grade = relationship("MaterialGrade", back_populates="lots")
+    material_profile = relationship("MaterialProfile", back_populates="lots")
     stock_items = relationship("StockItem", back_populates="lot")
 
     # File attachments (certificates) — polymorphic File pattern
@@ -508,7 +524,9 @@ class DieComponent(Base):
     id = Column(Integer, primary_key=True, index=True)
     die_id = Column(Integer, ForeignKey("die.id"), nullable=False)
     component_type_id = Column(Integer, ForeignKey("component_type.id"), nullable=False)
-    # REMAPPED: now points to the unified stock_item table
+    # Design-time material specification (what the engineer needs)
+    material_profile_id = Column(Integer, ForeignKey("material_profile.id"), nullable=True)
+    # Runtime physical assignment (which actual stock piece is used)
     stock_item_id = Column(Integer, ForeignKey("stock_item.id"), nullable=True)
     package_length_mm = Column(Numeric(10, 2), nullable=False)
     theoretical_consumption_kg = Column(Numeric(12, 3), nullable=False)
@@ -516,6 +534,7 @@ class DieComponent(Base):
 
     die = relationship("Die", back_populates="components")
     component_type = relationship("ComponentType", back_populates="die_components")
+    material_profile = relationship("MaterialProfile", back_populates="die_components")
     stock_item = relationship("StockItem", back_populates="die_components")
     work_orders = relationship("WorkOrder", back_populates="die_component")
 
