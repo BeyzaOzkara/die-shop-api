@@ -995,3 +995,45 @@ def get_last_operators(
         }
 
     return result
+
+@router.get("/operations/all-operators")
+def get_all_operators(
+    operation_ids: str,
+    db: Session = Depends(get_db),
+):
+    """
+    For each operation_id, return all operators who worked on it.
+    """
+    try:
+        ids = [int(x.strip()) for x in operation_ids.split(",") if x.strip()]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="operation_ids must be comma-separated integers")
+    if not ids:
+        return {}
+    logs = (
+        db.query(DomainActionLog, Operator)
+        .join(Operator, Operator.id == DomainActionLog.actor_id)
+        .filter(
+            DomainActionLog.entity_type == "work_order_operation",
+            DomainActionLog.entity_id.in_(ids),
+            DomainActionLog.action_type.in_(["OPERATION_START", "OPERATION_RESUME"]),
+            DomainActionLog.actor_type == "operator",
+        )
+        .order_by(DomainActionLog.created_at.asc())
+        .all()
+    )
+    result = {}
+    for log_entry, op_actor in logs:
+        op_id = str(log_entry.entity_id)
+        if op_id not in result:
+            result[op_id] = []
+        
+        # Avoid duplicate consecutive operators if needed, or just collect unique
+        if not any(x['operator_id'] == op_actor.id for x in result[op_id]):
+            result[op_id].append({
+                "operator_id": op_actor.id,
+                "operator_name": op_actor.name,
+                "first_action_type": log_entry.action_type,
+                "first_performed_at": log_entry.created_at.isoformat() if log_entry.created_at else None,
+                            })
+    return result
