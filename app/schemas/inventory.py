@@ -72,6 +72,15 @@ class MaterialProfileUpdate(BaseModel):
     is_active: Optional[bool] = None
 
 
+class MaterialProfileSummaryRead(BaseModel):
+    material_profile_id: int
+    display_name: str
+    attributes: dict
+    category_name: str
+    base_uom: str
+    total_quantity: float
+
+
 class LocationCreate(BaseModel):
     name: str
     location_type: str                   # "WAREHOUSE" or "WORK_CENTER"

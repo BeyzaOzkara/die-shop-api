@@ -1,5 +1,10 @@
 .env
 .venv
 alembic
+
 __pycache__/
 *.pyc
+
+check_ops.py
+migrate_historical.py
+migrate_historical_data.py

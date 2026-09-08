@@ -37,7 +37,8 @@ from ..schemas.inventory import (
     StockTransactionRead,
     ProcessBatchCreate, ProcessBatchRead,
     CutSteelRequest, CutSteelResponse,
-    CompleteBatchRequest, CompleteBatchResponse
+    CompleteBatchRequest, CompleteBatchResponse,
+    MaterialProfileSummaryRead
 )
 from ..services.inventory_service import cut_steel_generate_wip, complete_process_batch
 
@@ -441,6 +442,45 @@ def list_stock_items_paginated(
     items = query.order_by(StockItem.id.desc()).offset(skip).limit(limit).all()
     
     return {"items": items, "total": total}
+
+@router.get("/summary/material-profiles", response_model=List[MaterialProfileSummaryRead])
+def get_material_profile_summaries(db: Session = Depends(get_db)):
+    # Calculate sum of quantity per material profile for active RAW_MATERIAL stock items
+    results = (
+        db.query(
+            MaterialProfile.id.label("material_profile_id"),
+            MaterialProfile.display_name,
+            MaterialProfile.attributes,
+            ItemCategory.name.label("category_name"),
+            ItemCategory.base_uom,
+            func.sum(StockItem.quantity).label("total_quantity")
+        )
+        .join(Lot, StockItem.lot_id == Lot.id)
+        .join(MaterialProfile, Lot.material_profile_id == MaterialProfile.id)
+        .join(ItemCategory, MaterialProfile.category_id == ItemCategory.id)
+        .filter(StockItem.is_active == True)
+        .filter(StockItem.item_type == ItemType.RAW_MATERIAL)
+        .group_by(
+            MaterialProfile.id,
+            MaterialProfile.display_name,
+            MaterialProfile.attributes,
+            ItemCategory.name,
+            ItemCategory.base_uom
+        )
+        .all()
+    )
+    
+    return [
+        {
+            "material_profile_id": r.material_profile_id,
+            "display_name": r.display_name,
+            "attributes": r.attributes,
+            "category_name": r.category_name,
+            "base_uom": r.base_uom,
+            "total_quantity": float(r.total_quantity or 0.0)
+        }
+        for r in results
+    ]
 
 @router.post("/stock-items", response_model=StockItemRead, status_code=201)
 def create_stock_item(payload: StockItemCreate, db: Session = Depends(get_db)):
