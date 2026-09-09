@@ -705,7 +705,7 @@ def replace_die_components(
         if missing_ct:
             raise HTTPException(status_code=400, detail=f"Invalid component_type_id(s): {missing_ct}")
 
-    stock_item_ids = [c.stock_item_id for c in payload.components]
+    stock_item_ids = [c.stock_item_id for c in payload.components if c.stock_item_id is not None]
     if stock_item_ids:
         existing_stock_items = set(
             r[0] for r in db.query(StockItem.id)
