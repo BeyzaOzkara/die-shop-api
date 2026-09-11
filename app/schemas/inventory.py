@@ -142,6 +142,7 @@ class LotRead(BaseModel):
     # Nested relationships
     supplier: Optional[SupplierNested] = None
     material_profile: Optional[MaterialProfileRead] = None
+    total_quantity: float = 0.0
 
     model_config = ConfigDict(from_attributes=True)
 

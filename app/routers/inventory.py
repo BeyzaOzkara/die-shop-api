@@ -335,7 +335,8 @@ def list_lots(
     query = db.query(Lot).options(
         joinedload(Lot.supplier),
         joinedload(Lot.material_profile).joinedload(MaterialProfile.category),
-        joinedload(Lot.files)
+        joinedload(Lot.files),
+        joinedload(Lot.stock_items)
     )
     if lot_number:
         query = query.filter(Lot.lot_number.ilike(f"%{lot_number}%"))
@@ -371,7 +372,8 @@ def create_lot(
     return db.query(Lot).options(
         joinedload(Lot.supplier),
         joinedload(Lot.material_profile).joinedload(MaterialProfile.category),
-        joinedload(Lot.files)
+        joinedload(Lot.files),
+        joinedload(Lot.stock_items)
     ).get(lot.id)
 
 # =========================

@@ -414,6 +414,10 @@ class Lot(Base):
         order_by="File.created_at.asc()",
     )
 
+    @property
+    def total_quantity(self):
+        return sum(item.quantity for item in self.stock_items if item.is_active and item.item_type == ItemType.RAW_MATERIAL)
+
 
 # =========================
 # THE UNIFIED STOCK ENTITY (NEW)
