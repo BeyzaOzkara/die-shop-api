@@ -200,6 +200,8 @@ class StockTransactionRead(BaseModel):
     notes: Optional[str] = None
     meta_data: Optional[dict] = None
     timestamp: datetime
+    
+    stock_item: Optional[StockItemRead] = None
 
     model_config = ConfigDict(from_attributes=True)
 

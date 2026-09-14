@@ -303,6 +303,7 @@ class LotForSawRead(BaseModel):
     stock_item_id: int
     alloy: Optional[str] = None
     diameter_mm: Optional[int] = None
+    material_profile: Optional[dict] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -1020,31 +1021,30 @@ def list_available_lots_for_operation(operation_id: int, db: Session = Depends(g
     elif op.work_order.die_component and op.work_order.die_component.stock_item:
         component_stock = op.work_order.die_component.stock_item
 
-    req_profile_id = None
-    req_diameter = None
-    req_alloy = None
-
-    if op.work_order.die_component and op.work_order.die_component.material_profile_id:
-        req_profile_id = op.work_order.die_component.material_profile_id
-    elif component_stock and component_stock.attributes:
-        req_diameter = component_stock.attributes.get("diameter_mm")
-        req_alloy = component_stock.attributes.get("alloy")
-
-    if not component_stock and not req_profile_id:
-        return []
-
     from ..models import ItemType, MaterialProfile
+
     items_query = db.query(StockItem).options(
         joinedload(StockItem.lot).joinedload(Lot.supplier),
         joinedload(StockItem.lot).joinedload(Lot.material_profile)
-    ).filter(
-        StockItem.item_type == ItemType.RAW_MATERIAL,
-        StockItem.is_active == True,
-        StockItem.quantity > 0
     )
 
-    if req_profile_id:
-        items_query = items_query.join(StockItem.lot).filter(Lot.material_profile_id == req_profile_id)
+    if component_stock:
+        # A specific stock item was chosen, only return this one
+        items_query = items_query.filter(
+            StockItem.id == component_stock.id,
+            StockItem.is_active == True,
+            StockItem.quantity > 0
+        )
+    elif op.work_order.die_component and op.work_order.die_component.material_profile_id:
+        # Only a material profile was chosen, return all RAW_MATERIALs for this profile
+        req_profile_id = op.work_order.die_component.material_profile_id
+        items_query = items_query.filter(
+            StockItem.item_type == ItemType.RAW_MATERIAL,
+            StockItem.is_active == True,
+            StockItem.quantity > 0
+        ).join(StockItem.lot).filter(Lot.material_profile_id == req_profile_id)
+    else:
+        return []
 
     items = items_query.all()
 
@@ -1059,13 +1059,6 @@ def list_available_lots_for_operation(operation_id: int, db: Session = Depends(g
              dia = item.attributes.get("diameter_mm")
              alloy = item.attributes.get("alloy")
 
-        if req_profile_id is None:
-            if req_diameter and dia and int(dia) < int(req_diameter):
-                continue
-                
-            if req_alloy and alloy != req_alloy:
-                continue
-            
         lot = item.lot
         out.append(LotForSawRead(
             id=item.id,
@@ -1078,6 +1071,7 @@ def list_available_lots_for_operation(operation_id: int, db: Session = Depends(g
             received_date=lot.receive_date if lot else item.created_at,
             alloy=alloy,
             diameter_mm=dia,
+            material_profile={"display_name": lot.material_profile.display_name} if lot and lot.material_profile else None,
         ))
     return out
 

@@ -544,10 +544,14 @@ def list_stock_transactions(
     stock_item_id: Optional[int] = None,
     db: Session = Depends(get_db)
 ):
-    query = db.query(StockTransaction)
+    query = db.query(StockTransaction).options(
+        joinedload(StockTransaction.stock_item).joinedload(StockItem.category),
+        joinedload(StockTransaction.stock_item).joinedload(StockItem.location),
+        joinedload(StockTransaction.stock_item).joinedload(StockItem.lot).joinedload(Lot.material_profile)
+    )
     if stock_item_id:
         query = query.filter(StockTransaction.stock_item_id == stock_item_id)
-    return query.order_by(StockTransaction.timestamp.desc()).all()
+    return query.order_by(StockTransaction.timestamp.desc()).limit(1000).all()
 
 # =========================
 # Services (Cut Steel / Complete Batch)
