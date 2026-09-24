@@ -1,6 +1,7 @@
 # backend/routers/inventory.py
 from typing import List, Optional
 import json
+import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as UploadFileField, Form, Query
@@ -356,8 +357,24 @@ def create_lot(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid payload: {e}")
 
+    # Auto-generate lot number if not provided
+    if p.lot_number:
+        lot_number = p.lot_number
+    else:
+        last_lot = db.query(Lot).order_by(Lot.id.desc()).first()
+        if last_lot and last_lot.lot_number and last_lot.lot_number.startswith("LOT-"):
+            try:
+                last_num = int(last_lot.lot_number.split("-")[1])
+                lot_number = f"LOT-{last_num + 1}"
+            except ValueError:
+                lot_number = f"LOT-{last_lot.id + 1}"
+        else:
+            lot_number = f"LOT-{(last_lot.id + 1) if last_lot else 1}"
+
     try:
-        lot = Lot(**p.model_dump())
+        lot_data = p.model_dump()
+        lot_data["lot_number"] = lot_number
+        lot = Lot(**lot_data)
         db.add(lot)
         db.flush()
 

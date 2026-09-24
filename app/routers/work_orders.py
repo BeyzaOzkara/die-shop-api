@@ -22,7 +22,12 @@ from ..models import (
     Die,
     Operator,
     StockItem,
+    ItemType,
+    Location,
+    StockTransaction,
+    TransactionType
 )
+
 
 router = APIRouter(prefix="/work-orders", tags=["Work Orders"])
 
@@ -874,7 +879,6 @@ def start_operation(
     # Move WIP stock item to WorkCenter's location
     work_order = db.query(WorkOrder).get(op_row.work_order_id)
     if work_order and work_order.stock_item_id:
-        from ..models import Location, StockTransaction, TransactionType
         wc_location = db.query(Location).filter(Location.work_center_id == wc.id).first()
         if wc_location:
             wip_item = db.query(StockItem).get(work_order.stock_item_id)
@@ -1020,8 +1024,6 @@ def list_available_lots_for_operation(operation_id: int, db: Session = Depends(g
         component_stock = op.work_order.stock_item
     elif op.work_order.die_component and op.work_order.die_component.stock_item:
         component_stock = op.work_order.die_component.stock_item
-
-    from ..models import ItemType, MaterialProfile
 
     items_query = db.query(StockItem).options(
         joinedload(StockItem.lot).joinedload(Lot.supplier),

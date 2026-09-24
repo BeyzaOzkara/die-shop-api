@@ -122,7 +122,7 @@ class SupplierNested(BaseModel):
 # =========================
 
 class LotCreate(BaseModel):
-    lot_number: str
+    lot_number: Optional[str] = None   # auto-generated if omitted
     certificate_number: Optional[str] = None
     receive_date: datetime
     supplier_id: Optional[int] = None
