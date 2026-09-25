@@ -35,27 +35,34 @@ class WorkCenterDailyStats(BaseModel):
 
 @router.get("/work-centers/daily-stats", response_model=List[WorkCenterDailyStats])
 def get_work_center_daily_stats(
-    target_date: date = Query(..., description="Target date for the report"),
+    start_time: datetime = Query(..., description="Start time for the report"),
+    end_time: datetime = Query(..., description="End time for the report"),
     db: Session = Depends(get_db)
 ):
     """
     Returns operating time vs downtime and detailed fragmented intervals 
-    for each work center for a specific date.
+    for each work center for a specific period.
     """
     from datetime import timezone, timedelta
     local_tz = timezone(timedelta(hours=3))
-    start_of_day = datetime.combine(target_date, time.min).replace(tzinfo=local_tz)
-    end_of_day = datetime.combine(target_date, time.max).replace(tzinfo=local_tz)
+    
+    if start_time.tzinfo is None:
+        start_time = start_time.replace(tzinfo=local_tz)
+    if end_time.tzinfo is None:
+        end_time = end_time.replace(tzinfo=local_tz)
+        
+    start_of_day = start_time
+    end_of_day = end_time
     now = datetime.now(local_tz)
     
-    if target_date == now.date():
-        total_day_minutes = (now - start_of_day).total_seconds() / 60.0
-        if total_day_minutes < 0:
-             total_day_minutes = 0
-    elif target_date < now.date():
-        total_day_minutes = 24 * 60.0
+    total_period_minutes = max(0, (end_of_day - start_of_day).total_seconds() / 60.0)
+    if end_of_day > now:
+        if start_of_day > now:
+            total_day_minutes = 0
+        else:
+            total_day_minutes = max(0, (now - start_of_day).total_seconds() / 60.0)
     else:
-        total_day_minutes = 0
+        total_day_minutes = total_period_minutes
 
     work_centers = db.query(WorkCenter).all()
     operators = db.query(Operator).all()
