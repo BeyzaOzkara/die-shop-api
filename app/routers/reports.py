@@ -42,9 +42,11 @@ def get_work_center_daily_stats(
     Returns operating time vs downtime and detailed fragmented intervals 
     for each work center for a specific date.
     """
-    start_of_day = datetime.combine(target_date, time.min).replace(tzinfo=timezone.utc)
-    end_of_day = datetime.combine(target_date, time.max).replace(tzinfo=timezone.utc)
-    now = datetime.now(timezone.utc)
+    from datetime import timezone, timedelta
+    local_tz = timezone(timedelta(hours=3))
+    start_of_day = datetime.combine(target_date, time.min).replace(tzinfo=local_tz)
+    end_of_day = datetime.combine(target_date, time.max).replace(tzinfo=local_tz)
+    now = datetime.now(local_tz)
     
     if target_date == now.date():
         total_day_minutes = (now - start_of_day).total_seconds() / 60.0
