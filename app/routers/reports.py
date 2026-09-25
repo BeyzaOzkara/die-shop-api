@@ -207,5 +207,6 @@ def get_work_center_daily_stats(
 
     for stats in wc_dict.values():
         stats.downtime_minutes = max(0, total_day_minutes - stats.operating_time_minutes)
+        stats.intervals.sort(key=lambda x: x.start_time)
 
     return list(wc_dict.values())
