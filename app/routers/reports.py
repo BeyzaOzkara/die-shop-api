@@ -3,7 +3,8 @@ from datetime import datetime, date, time, timezone
 from typing import List, Optional, Dict
 from pydantic import BaseModel, ConfigDict
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
+from collections import defaultdict
 
 from ..database import get_db
 from ..models import DomainActionLog, WorkCenter, WorkOrderOperation, Operator
@@ -78,32 +79,45 @@ def get_work_center_daily_stats(
             intervals=[]
         )
     
+    from sqlalchemy import or_
+    
     active_operations = (
         db.query(WorkOrderOperation)
+        .options(joinedload(WorkOrderOperation.work_order))
         .filter(
             WorkOrderOperation.started_at != None,
-            WorkOrderOperation.started_at <= end_of_day
+            WorkOrderOperation.started_at <= end_of_day,
+            or_(
+                WorkOrderOperation.completed_at == None,
+                WorkOrderOperation.completed_at >= start_of_day
+            )
         )
         .all()
     )
     
-    relevant_operations = [
-        op for op in active_operations
-        if op.completed_at is None or op.completed_at >= start_of_day
-    ]
+    relevant_operations = active_operations
     
-    for op in relevant_operations:
-        # Fetch all logs up to end_of_day to compute total & daily breakdown
-        op_logs = (
+    if relevant_operations:
+        relevant_op_ids = [op.id for op in relevant_operations]
+        all_logs = (
             db.query(DomainActionLog)
             .filter(
                 DomainActionLog.entity_type == "work_order_operation",
-                DomainActionLog.entity_id == op.id,
+                DomainActionLog.entity_id.in_(relevant_op_ids),
                 DomainActionLog.created_at <= end_of_day
             )
             .order_by(DomainActionLog.created_at)
             .all()
         )
+        logs_by_op = defaultdict(list)
+        for log in all_logs:
+            logs_by_op[int(log.entity_id)].append(log)
+    else:
+        logs_by_op = {}
+    
+    for op in relevant_operations:
+        # Get logs from pre-fetched dictionary
+        op_logs = logs_by_op.get(op.id, [])
         
         current_interval_start = None
         current_interval_operator = None

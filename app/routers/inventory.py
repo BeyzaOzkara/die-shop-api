@@ -407,6 +407,7 @@ def list_stock_items(
     query = db.query(StockItem).options(
         joinedload(StockItem.category),
         joinedload(StockItem.lot).joinedload(Lot.material_profile),
+        joinedload(StockItem.lot).joinedload(Lot.supplier),
         joinedload(StockItem.location)
     )
     if item_type:
